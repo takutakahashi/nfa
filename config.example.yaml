@@ -1,0 +1,33 @@
+# nfa — network filter for agent
+# Example configuration file.
+# Pass it with: nfa proxy --config config.yaml
+#
+# CLI flags and environment variables (NETWORK_FILTER_ALLOWED_DOMAINS,
+# NETWORK_FILTER_DENIED_DOMAINS) take precedence over this file.
+
+filter:
+  # mode: "allowlist" or "denylist"
+  #
+  # allowlist — only the listed domains are permitted; everything else is blocked.
+  #             An empty `domains` list blocks ALL outbound traffic
+  #             (except hardcoded bypass domains such as *.anthropic.com).
+  #
+  # denylist  — only the listed domains are blocked; everything else is allowed.
+  #             An empty `domains` list allows ALL outbound traffic.
+  mode: allowlist
+
+  # domains is the list of patterns to apply in the chosen mode.
+  # Patterns support:
+  #   *.example.com          — any subdomain of example.com
+  #   prefix.*.example.com   — prefix + any single label + suffix
+  #   exact.com              — exact hostname match
+  domains:
+    - "example.com"
+    - "*.example.com"
+    - "trusted.io"
+
+# deferredPolicy: when true, the proxy starts in passthrough mode (all traffic
+# allowed) and the policy is activated only after:
+#   curl -X POST http://localhost:3129/enable-policy
+# Useful when the main container needs network access during startup.
+deferredPolicy: false
