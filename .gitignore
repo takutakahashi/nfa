@@ -1,3 +1,7 @@
 nfa
 *.exe
 .acp-session-id
+# Override global gitignore: commit project-level Claude commands
+!.claude/
+!.claude/commands/
+!.claude/commands/*.md
