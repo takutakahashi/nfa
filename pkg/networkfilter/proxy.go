@@ -141,11 +141,16 @@ func (p *Proxy) handleCONNECT(conn net.Conn, req *http.Request) {
 		host = req.Host
 	}
 
-	result := p.effectiveFilter().Check(host)
+	f := p.effectiveFilter()
+	result := f.Check(host)
 	p.log.record(host, result)
-	log.Printf("[nfa] CONNECT %s: %s", result, req.Host)
+	if result == FilterResultBlocked && f.IsCountMode() {
+		log.Printf("[nfa] CONNECT count-blocked (passed through): %s", req.Host)
+	} else {
+		log.Printf("[nfa] CONNECT %s: %s", result, req.Host)
+	}
 
-	if result == FilterResultBlocked {
+	if result == FilterResultBlocked && !f.IsCountMode() {
 		_, _ = fmt.Fprintf(conn, "HTTP/1.1 403 Forbidden\r\n\r\nblocked by network filter\n")
 		return
 	}
@@ -168,11 +173,16 @@ func (p *Proxy) handleHTTP(conn net.Conn, br *bufio.Reader, req *http.Request) {
 		host = req.URL.Host
 	}
 
-	result := p.effectiveFilter().Check(host)
+	f := p.effectiveFilter()
+	result := f.Check(host)
 	p.log.record(host, result)
-	log.Printf("[nfa] HTTP %s: %s", result, host)
+	if result == FilterResultBlocked && f.IsCountMode() {
+		log.Printf("[nfa] HTTP count-blocked (passed through): %s", host)
+	} else {
+		log.Printf("[nfa] HTTP %s: %s", result, host)
+	}
 
-	if result == FilterResultBlocked {
+	if result == FilterResultBlocked && !f.IsCountMode() {
 		resp := &http.Response{
 			Status:     "403 Forbidden",
 			StatusCode: http.StatusForbidden,
@@ -224,11 +234,16 @@ func (p *Proxy) handleTransparentTLS(conn net.Conn, br *bufio.Reader) {
 		return
 	}
 
-	result := p.effectiveFilter().Check(sni)
+	f := p.effectiveFilter()
+	result := f.Check(sni)
 	p.log.record(sni, result)
-	log.Printf("[nfa] TLS %s: %s", result, sni)
+	if result == FilterResultBlocked && f.IsCountMode() {
+		log.Printf("[nfa] TLS count-blocked (passed through): %s", sni)
+	} else {
+		log.Printf("[nfa] TLS %s: %s", result, sni)
+	}
 
-	if result == FilterResultBlocked {
+	if result == FilterResultBlocked && !f.IsCountMode() {
 		return
 	}
 

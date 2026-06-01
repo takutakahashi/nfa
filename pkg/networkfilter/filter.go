@@ -25,6 +25,7 @@ type Filter struct {
 	deniedDomains  []string
 	allowedDomains []string
 	allowlistMode  bool
+	countMode      bool // when true, log would-be-blocked domains but don't reject traffic
 }
 
 func normalize(domains []string) []string {
@@ -46,6 +47,18 @@ func NewFilter(deniedDomains []string) *Filter {
 // NewAllowlistFilter creates an allowlist filter: only listed domains are permitted.
 func NewAllowlistFilter(allowedDomains []string) *Filter {
 	return &Filter{allowedDomains: normalize(allowedDomains), allowlistMode: true}
+}
+
+// NewCountFilter creates a count-mode denylist filter: would-be-blocked domains are
+// logged but traffic is not rejected.
+func NewCountFilter(deniedDomains []string) *Filter {
+	return &Filter{deniedDomains: normalize(deniedDomains), countMode: true}
+}
+
+// NewCountAllowlistFilter creates a count-mode allowlist filter: would-be-blocked
+// domains are logged but traffic is not rejected.
+func NewCountAllowlistFilter(allowedDomains []string) *Filter {
+	return &Filter{allowedDomains: normalize(allowedDomains), allowlistMode: true, countMode: true}
 }
 
 // FilterResult describes the outcome of a filter check.
@@ -109,6 +122,12 @@ func (f *Filter) IsDenied(host string) bool {
 // IsAllowlistMode reports whether the filter is operating in allowlist mode.
 func (f *Filter) IsAllowlistMode() bool {
 	return f.allowlistMode
+}
+
+// IsCountMode reports whether the filter is in count-only mode.
+// In count mode, domains that would be blocked are logged but traffic is not rejected.
+func (f *Filter) IsCountMode() bool {
+	return f.countMode
 }
 
 // AllowedDomains returns the domains configured in allowlist mode (empty in denylist mode).

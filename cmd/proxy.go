@@ -27,6 +27,11 @@ Filter modes:
   denylist   Listed domains are blocked; all others are permitted. (default)
              An empty domain list allows all traffic.
 
+Count mode (--count-mode / NETWORK_FILTER_COUNT_MODE=true):
+  Rules are evaluated and would-be-blocked domains are recorded in the
+  denied list, but traffic is NOT actually rejected. Useful for auditing
+  what a policy would block before enforcing it.
+
 Env vars:
   NETWORK_FILTER_ALLOWED_DOMAINS  comma-separated allowed domains (sets allowlist mode)
   NETWORK_FILTER_DENIED_DOMAINS   comma-separated denied domains  (sets denylist mode)
@@ -50,6 +55,8 @@ func init() {
 		"Domains to block (denylist mode). Also via NETWORK_FILTER_DENIED_DOMAINS.")
 	proxyCmd.Flags().Bool("deferred-policy", false,
 		"Start in passthrough mode. Activate via POST /enable-policy on port 3129.")
+	proxyCmd.Flags().Bool("count-mode", false,
+		"Log would-be-blocked domains but do not reject traffic. Also via NETWORK_FILTER_COUNT_MODE.")
 }
 
 func runProxy(cmd *cobra.Command, _ []string) error {
@@ -76,10 +83,12 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	allowedFlag, _ := cmd.Flags().GetStringSlice("allowed-domains")
 	deniedFlag, _ := cmd.Flags().GetStringSlice("denied-domains")
 	deferredFlag, _ := cmd.Flags().GetBool("deferred-policy")
+	countModeFlag, _ := cmd.Flags().GetBool("count-mode")
 
 	allowedDomains := parseDomains("NETWORK_FILTER_ALLOWED_DOMAINS", allowedFlag)
 	deniedDomains := parseDomains("NETWORK_FILTER_DENIED_DOMAINS", deniedFlag)
 	deferredPolicy := deferredFlag
+	countMode := countModeFlag || os.Getenv("NETWORK_FILTER_COUNT_MODE") == "true"
 
 	// Merge config file values when no CLI/env override was given.
 	if cfg != nil {
@@ -93,19 +102,37 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 		if !deferredPolicy {
 			deferredPolicy = cfg.DeferredPolicy
 		}
+		if !countMode {
+			countMode = cfg.Filter.IsCountMode()
+		}
 	}
 
 	var filter *networkfilter.Filter
 	switch {
 	case len(allowedDomains) > 0:
-		log.Printf("[nfa] allowlist mode: %v", allowedDomains)
-		filter = networkfilter.NewAllowlistFilter(allowedDomains)
+		if countMode {
+			log.Printf("[nfa] allowlist count mode: %v", allowedDomains)
+			filter = networkfilter.NewCountAllowlistFilter(allowedDomains)
+		} else {
+			log.Printf("[nfa] allowlist mode: %v", allowedDomains)
+			filter = networkfilter.NewAllowlistFilter(allowedDomains)
+		}
 	case len(deniedDomains) > 0:
-		log.Printf("[nfa] denylist mode: %v", deniedDomains)
-		filter = networkfilter.NewFilter(deniedDomains)
+		if countMode {
+			log.Printf("[nfa] denylist count mode: %v", deniedDomains)
+			filter = networkfilter.NewCountFilter(deniedDomains)
+		} else {
+			log.Printf("[nfa] denylist mode: %v", deniedDomains)
+			filter = networkfilter.NewFilter(deniedDomains)
+		}
 	default:
-		log.Printf("[nfa] deny-all mode (no domains specified)")
-		filter = networkfilter.NewAllowlistFilter(nil)
+		if countMode {
+			log.Printf("[nfa] deny-all count mode (no domains specified)")
+			filter = networkfilter.NewCountAllowlistFilter(nil)
+		} else {
+			log.Printf("[nfa] deny-all mode (no domains specified)")
+			filter = networkfilter.NewAllowlistFilter(nil)
+		}
 	}
 
 	if deferredPolicy {

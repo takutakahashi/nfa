@@ -15,11 +15,15 @@ type Config struct {
 
 // FilterConfig defines the domain filter policy.
 type FilterConfig struct {
-	// Mode is either "allowlist" or "denylist".
+	// Mode is "allowlist", "denylist", or "count".
 	// allowlist: only listed domains are permitted; all others are blocked.
 	// denylist:  listed domains are blocked; all others are permitted.
 	// Defaults to "denylist" when omitted.
 	Mode string `yaml:"mode"`
+
+	// CountMode enables count-only mode: domains that would be blocked are
+	// recorded in the denied list but traffic is not actually rejected.
+	CountMode bool `yaml:"countMode"`
 
 	// Domains is the list of domain patterns for the chosen mode.
 	// Supports leading wildcard (*.example.com) and middle wildcard (prefix.*.example.com).
@@ -42,4 +46,9 @@ func Load(path string) (*Config, error) {
 // IsAllowlist returns true when Mode is "allowlist".
 func (f *FilterConfig) IsAllowlist() bool {
 	return f.Mode == "allowlist"
+}
+
+// IsCountMode returns true when CountMode is set.
+func (f *FilterConfig) IsCountMode() bool {
+	return f.CountMode
 }

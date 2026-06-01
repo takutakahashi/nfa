@@ -16,6 +16,12 @@ filter:
   #             An empty `domains` list allows ALL outbound traffic.
   mode: allowlist
 
+  # countMode: when true, rules are evaluated and would-be-blocked domains are
+  # recorded in the denied list (GET /domains), but traffic is NOT rejected.
+  # Useful for auditing what a policy would block before enforcing it.
+  # Can also be set via --count-mode flag or NETWORK_FILTER_COUNT_MODE=true.
+  countMode: false
+
   # domains is the list of patterns to apply in the chosen mode.
   # Patterns support:
   #   *.example.com          — any subdomain of example.com

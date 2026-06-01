@@ -89,6 +89,48 @@ func TestBypassDomains(t *testing.T) {
 	}
 }
 
+func TestCountFilterStillReportsBlocked(t *testing.T) {
+	f := NewCountFilter([]string{"bad.com", "*.evil.org"})
+	if !f.IsCountMode() {
+		t.Fatal("NewCountFilter: IsCountMode() = false, want true")
+	}
+	cases := []struct {
+		host string
+		want FilterResult
+	}{
+		{"bad.com", FilterResultBlocked},
+		{"sub.evil.org", FilterResultBlocked},
+		{"good.com", FilterResultAllowed},
+	}
+	for _, c := range cases {
+		if got := f.Check(c.host); got != c.want {
+			t.Errorf("Check(%q) = %v, want %v", c.host, got, c.want)
+		}
+	}
+}
+
+func TestCountAllowlistFilterStillReportsBlocked(t *testing.T) {
+	f := NewCountAllowlistFilter([]string{"example.com"})
+	if !f.IsCountMode() {
+		t.Fatal("NewCountAllowlistFilter: IsCountMode() = false, want true")
+	}
+	if r := f.Check("example.com"); r != FilterResultAllowed {
+		t.Errorf("Check(example.com) = %v, want allowed", r)
+	}
+	if r := f.Check("other.com"); r != FilterResultBlocked {
+		t.Errorf("Check(other.com) = %v, want blocked", r)
+	}
+}
+
+func TestNormalFilterIsNotCountMode(t *testing.T) {
+	if NewFilter(nil).IsCountMode() {
+		t.Error("NewFilter: IsCountMode() = true, want false")
+	}
+	if NewAllowlistFilter(nil).IsCountMode() {
+		t.Error("NewAllowlistFilter: IsCountMode() = true, want false")
+	}
+}
+
 func TestFormerBypassDomainsNowBlocked(t *testing.T) {
 	f := NewAllowlistFilter([]string{"example.com"})
 	blocked := []string{
