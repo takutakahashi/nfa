@@ -8,11 +8,17 @@ import (
 	"net/http"
 )
 
+// domainsResponse is the JSON body returned by GET /domains.
+type domainsResponse struct {
+	Mode    string   `json:"mode"`
+	Allowed []string `json:"allowed"`
+	Denied  []string `json:"denied"`
+}
+
 // ControlServer exposes a minimal HTTP API on ControlPort (localhost only).
 //
-//   - POST /enable-policy   — activate the configured filter (idempotent)
-//   - GET  /domains/allowed — list allowed domains (non-empty in allowlist mode)
-//   - GET  /domains/denied  — list denied domains (non-empty in denylist mode)
+//   - POST /enable-policy — activate the configured filter (idempotent)
+//   - GET  /domains       — return allow/deny domain lists and active mode
 type ControlServer struct {
 	proxy *Proxy
 }
@@ -30,15 +36,19 @@ func (c *ControlServer) Run(lis net.Listener) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, "policy enabled")
 	})
-	mux.HandleFunc("GET /domains/allowed", func(w http.ResponseWriter, _ *http.Request) {
-		domains := c.proxy.configuredFilter.AllowedDomains()
+	mux.HandleFunc("GET /domains", func(w http.ResponseWriter, _ *http.Request) {
+		f := c.proxy.configuredFilter
+		mode := "denylist"
+		if f.IsAllowlistMode() {
+			mode = "allowlist"
+		}
+		resp := domainsResponse{
+			Mode:    mode,
+			Allowed: f.AllowedDomains(),
+			Denied:  f.DeniedDomains(),
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string][]string{"domains": domains})
-	})
-	mux.HandleFunc("GET /domains/denied", func(w http.ResponseWriter, _ *http.Request) {
-		domains := c.proxy.configuredFilter.DeniedDomains()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string][]string{"domains": domains})
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	srv := &http.Server{Handler: mux}
 	log.Printf("[nfa] control server listening on %s", lis.Addr())
