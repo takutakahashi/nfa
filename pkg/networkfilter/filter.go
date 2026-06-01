@@ -106,6 +106,11 @@ func (f *Filter) IsDenied(host string) bool {
 	return f.Check(host) == FilterResultBlocked
 }
 
+// IsAllowlistMode reports whether the filter is operating in allowlist mode.
+func (f *Filter) IsAllowlistMode() bool {
+	return f.allowlistMode
+}
+
 // AllowedDomains returns the domains configured in allowlist mode (empty in denylist mode).
 func (f *Filter) AllowedDomains() []string {
 	if f.allowedDomains == nil {
