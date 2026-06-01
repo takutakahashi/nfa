@@ -20,4 +20,5 @@ func Execute() {
 func init() {
 	rootCmd.AddCommand(proxyCmd)
 	rootCmd.AddCommand(setupCmd)
+	rootCmd.AddCommand(setupIptablesCmd)
 }
