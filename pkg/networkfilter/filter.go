@@ -106,6 +106,22 @@ func (f *Filter) IsDenied(host string) bool {
 	return f.Check(host) == FilterResultBlocked
 }
 
+// AllowedDomains returns the domains configured in allowlist mode (empty in denylist mode).
+func (f *Filter) AllowedDomains() []string {
+	if f.allowedDomains == nil {
+		return []string{}
+	}
+	return f.allowedDomains
+}
+
+// DeniedDomains returns the domains configured in denylist mode (empty in allowlist mode).
+func (f *Filter) DeniedDomains() []string {
+	if f.deniedDomains == nil {
+		return []string{}
+	}
+	return f.deniedDomains
+}
+
 // matchDomain checks whether host matches the pattern.
 // Supports leading wildcard (*.example.com) and middle wildcard (prefix.*.example.com).
 func matchDomain(host, pattern string) bool {
