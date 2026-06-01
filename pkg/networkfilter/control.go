@@ -10,7 +10,6 @@ import (
 
 // domainsResponse is the JSON body returned by GET /domains.
 type domainsResponse struct {
-	Mode    string   `json:"mode"`
 	Allowed []string `json:"allowed"`
 	Denied  []string `json:"denied"`
 }
@@ -18,7 +17,7 @@ type domainsResponse struct {
 // ControlServer exposes a minimal HTTP API on ControlPort (localhost only).
 //
 //   - POST /enable-policy — activate the configured filter (idempotent)
-//   - GET  /domains       — return allow/deny domain lists and active mode
+//   - GET  /domains       — return domains the proxy has actually allowed and denied
 type ControlServer struct {
 	proxy *Proxy
 }
@@ -37,15 +36,10 @@ func (c *ControlServer) Run(lis net.Listener) error {
 		_, _ = fmt.Fprintln(w, "policy enabled")
 	})
 	mux.HandleFunc("GET /domains", func(w http.ResponseWriter, _ *http.Request) {
-		f := c.proxy.configuredFilter
-		mode := "denylist"
-		if f.IsAllowlistMode() {
-			mode = "allowlist"
-		}
+		allowed, denied := c.proxy.log.snapshot()
 		resp := domainsResponse{
-			Mode:    mode,
-			Allowed: f.AllowedDomains(),
-			Denied:  f.DeniedDomains(),
+			Allowed: allowed,
+			Denied:  denied,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
