@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -24,19 +25,58 @@ const (
 
 var passthroughFilter = &Filter{}
 
+// domainLog records unique domains that the proxy has allowed or denied.
+type domainLog struct {
+	mu      sync.RWMutex
+	allowed map[string]struct{}
+	denied  map[string]struct{}
+}
+
+func newDomainLog() domainLog {
+	return domainLog{
+		allowed: make(map[string]struct{}),
+		denied:  make(map[string]struct{}),
+	}
+}
+
+func (d *domainLog) record(host string, result FilterResult) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if result == FilterResultBlocked {
+		d.denied[host] = struct{}{}
+	} else {
+		d.allowed[host] = struct{}{}
+	}
+}
+
+func (d *domainLog) snapshot() (allowed, denied []string) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	allowed = make([]string, 0, len(d.allowed))
+	for h := range d.allowed {
+		allowed = append(allowed, h)
+	}
+	denied = make([]string, 0, len(d.denied))
+	for h := range d.denied {
+		denied = append(denied, h)
+	}
+	return
+}
+
 // Proxy is a forward proxy that enforces a domain filter.
 // It handles HTTP CONNECT tunnels, HTTP forward requests, and transparent TCP
 // (iptables-redirected port 80/443) on a single port.
 type Proxy struct {
 	configuredFilter *Filter
 	activeFilter     atomic.Pointer[Filter]
+	log              domainLog
 }
 
 // NewProxy creates a Proxy with the given filter.
 // When active is true, the policy is enforced immediately.
 // When active is false, all traffic is allowed until EnablePolicy is called.
 func NewProxy(filter *Filter, active bool) *Proxy {
-	p := &Proxy{configuredFilter: filter}
+	p := &Proxy{configuredFilter: filter, log: newDomainLog()}
 	if active {
 		p.activeFilter.Store(filter)
 	}
@@ -102,6 +142,7 @@ func (p *Proxy) handleCONNECT(conn net.Conn, req *http.Request) {
 	}
 
 	result := p.effectiveFilter().Check(host)
+	p.log.record(host, result)
 	log.Printf("[nfa] CONNECT %s: %s", result, req.Host)
 
 	if result == FilterResultBlocked {
@@ -128,6 +169,7 @@ func (p *Proxy) handleHTTP(conn net.Conn, br *bufio.Reader, req *http.Request) {
 	}
 
 	result := p.effectiveFilter().Check(host)
+	p.log.record(host, result)
 	log.Printf("[nfa] HTTP %s: %s", result, host)
 
 	if result == FilterResultBlocked {
@@ -183,6 +225,7 @@ func (p *Proxy) handleTransparentTLS(conn net.Conn, br *bufio.Reader) {
 	}
 
 	result := p.effectiveFilter().Check(sni)
+	p.log.record(sni, result)
 	log.Printf("[nfa] TLS %s: %s", result, sni)
 
 	if result == FilterResultBlocked {

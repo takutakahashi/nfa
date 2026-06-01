@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"sort"
 	"testing"
 )
@@ -17,106 +16,109 @@ func newControlHandler(proxy *Proxy) http.Handler {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("GET /domains", func(w http.ResponseWriter, _ *http.Request) {
-		f := cs.proxy.configuredFilter
-		mode := "denylist"
-		if f.IsAllowlistMode() {
-			mode = "allowlist"
-		}
-		resp := domainsResponse{
-			Mode:    mode,
-			Allowed: f.AllowedDomains(),
-			Denied:  f.DeniedDomains(),
-		}
+		allowed, denied := cs.proxy.log.snapshot()
+		resp := domainsResponse{Allowed: allowed, Denied: denied}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 	return mux
 }
 
-func TestControlDomainsAllowlistMode(t *testing.T) {
-	want := []string{"example.com", "*.trusted.io"}
-	proxy := NewProxy(NewAllowlistFilter(want), true)
-	handler := newControlHandler(proxy)
-
+func getDomainsResponse(t *testing.T, handler http.Handler) domainsResponse {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/domains", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
-
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
-
 	var body domainsResponse
 	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Mode != "allowlist" {
-		t.Errorf("mode = %q, want allowlist", body.Mode)
-	}
-	got := body.Allowed
-	sort.Strings(got)
-	sort.Strings(want)
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("allowed = %v, want %v", got, want)
-	}
-	if len(body.Denied) != 0 {
-		t.Errorf("denied = %v, want empty in allowlist mode", body.Denied)
-	}
+	return body
 }
 
-func TestControlDomainsDenylistMode(t *testing.T) {
-	want := []string{"bad.com", "*.evil.org"}
-	proxy := NewProxy(NewFilter(want), true)
+func TestControlDomainsEmptyBeforeTraffic(t *testing.T) {
+	proxy := NewProxy(NewAllowlistFilter([]string{"example.com"}), true)
 	handler := newControlHandler(proxy)
 
-	req := httptest.NewRequest(http.MethodGet, "/domains", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-
-	var body domainsResponse
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if body.Mode != "denylist" {
-		t.Errorf("mode = %q, want denylist", body.Mode)
-	}
-	got := body.Denied
-	sort.Strings(got)
-	sort.Strings(want)
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("denied = %v, want %v", got, want)
-	}
-	if len(body.Allowed) != 0 {
-		t.Errorf("allowed = %v, want empty in denylist mode", body.Allowed)
-	}
-}
-
-func TestControlDomainsEmptyLists(t *testing.T) {
-	proxy := NewProxy(NewFilter(nil), true)
-	handler := newControlHandler(proxy)
-
-	req := httptest.NewRequest(http.MethodGet, "/domains", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-	var body domainsResponse
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	body := getDomainsResponse(t, handler)
 	if body.Allowed == nil {
 		t.Error("allowed is null, want empty array")
 	}
 	if body.Denied == nil {
 		t.Error("denied is null, want empty array")
+	}
+	if len(body.Allowed) != 0 || len(body.Denied) != 0 {
+		t.Errorf("expected empty lists before any traffic, got allowed=%v denied=%v", body.Allowed, body.Denied)
+	}
+}
+
+func TestControlDomainsRecordsAllowed(t *testing.T) {
+	proxy := NewProxy(NewAllowlistFilter([]string{"example.com", "*.trusted.io"}), true)
+	handler := newControlHandler(proxy)
+
+	// simulate traffic
+	proxy.log.record("example.com", FilterResultAllowed)
+	proxy.log.record("sub.trusted.io", FilterResultAllowed)
+	proxy.log.record("api.anthropic.com", FilterResultBypassed)
+
+	body := getDomainsResponse(t, handler)
+	sort.Strings(body.Allowed)
+	want := []string{"api.anthropic.com", "example.com", "sub.trusted.io"}
+	sort.Strings(want)
+	if len(body.Allowed) != len(want) {
+		t.Errorf("allowed = %v, want %v", body.Allowed, want)
+	}
+	for i := range want {
+		if body.Allowed[i] != want[i] {
+			t.Errorf("allowed[%d] = %q, want %q", i, body.Allowed[i], want[i])
+		}
+	}
+	if len(body.Denied) != 0 {
+		t.Errorf("denied = %v, want empty", body.Denied)
+	}
+}
+
+func TestControlDomainsRecordsDenied(t *testing.T) {
+	proxy := NewProxy(NewAllowlistFilter([]string{"example.com"}), true)
+	handler := newControlHandler(proxy)
+
+	proxy.log.record("bad.com", FilterResultBlocked)
+	proxy.log.record("evil.org", FilterResultBlocked)
+	proxy.log.record("example.com", FilterResultAllowed)
+
+	body := getDomainsResponse(t, handler)
+	sort.Strings(body.Denied)
+	wantDenied := []string{"bad.com", "evil.org"}
+	if len(body.Denied) != len(wantDenied) {
+		t.Errorf("denied = %v, want %v", body.Denied, wantDenied)
+	}
+	for i := range wantDenied {
+		if body.Denied[i] != wantDenied[i] {
+			t.Errorf("denied[%d] = %q, want %q", i, body.Denied[i], wantDenied[i])
+		}
+	}
+	if len(body.Allowed) != 1 || body.Allowed[0] != "example.com" {
+		t.Errorf("allowed = %v, want [example.com]", body.Allowed)
+	}
+}
+
+func TestControlDomainsDeduplicates(t *testing.T) {
+	proxy := NewProxy(NewFilter(nil), true)
+	handler := newControlHandler(proxy)
+
+	// same domain recorded multiple times
+	for i := 0; i < 5; i++ {
+		proxy.log.record("repeated.com", FilterResultAllowed)
+	}
+
+	body := getDomainsResponse(t, handler)
+	if len(body.Allowed) != 1 {
+		t.Errorf("allowed = %v (len %d), want exactly 1 unique entry", body.Allowed, len(body.Allowed))
 	}
 }
