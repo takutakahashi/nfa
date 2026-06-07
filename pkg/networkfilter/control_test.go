@@ -1,6 +1,7 @@
 package networkfilter
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,15 @@ func newControlHandler(proxy *Proxy) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /enable-policy", func(w http.ResponseWriter, r *http.Request) {
 		cs.proxy.EnablePolicy()
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("POST /policy", func(w http.ResponseWriter, r *http.Request) {
+		var req policyRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		cs.proxy.SetPolicy(newFilterFromPolicy(req))
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("GET /domains", func(w http.ResponseWriter, _ *http.Request) {
@@ -120,5 +130,26 @@ func TestControlDomainsDeduplicates(t *testing.T) {
 	body := getDomainsResponse(t, handler)
 	if len(body.Allowed) != 1 {
 		t.Errorf("allowed = %v (len %d), want exactly 1 unique entry", body.Allowed, len(body.Allowed))
+	}
+}
+
+func TestControlPolicyUpdatesActiveFilter(t *testing.T) {
+	proxy := NewProxy(NewFilter(nil), true)
+	handler := newControlHandler(proxy)
+
+	body := bytes.NewBufferString(`{"allowed":["example.com"],"count_mode":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/policy", body)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	filter := proxy.effectiveFilter()
+	if !filter.IsCountMode() {
+		t.Fatal("updated filter IsCountMode() = false, want true")
+	}
+	if got := filter.Check("blocked.example.net"); got != FilterResultBlocked {
+		t.Fatalf("Check(blocked.example.net) = %s, want blocked", got)
 	}
 }
