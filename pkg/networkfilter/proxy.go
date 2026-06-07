@@ -67,8 +67,9 @@ func (d *domainLog) snapshot() (allowed, denied []string) {
 // It handles HTTP CONNECT tunnels, HTTP forward requests, and transparent TCP
 // (iptables-redirected port 80/443) on a single port.
 type Proxy struct {
-	configuredFilter *Filter
+	configuredFilter atomic.Pointer[Filter]
 	activeFilter     atomic.Pointer[Filter]
+	policyActive     atomic.Bool
 	log              domainLog
 }
 
@@ -76,17 +77,30 @@ type Proxy struct {
 // When active is true, the policy is enforced immediately.
 // When active is false, all traffic is allowed until EnablePolicy is called.
 func NewProxy(filter *Filter, active bool) *Proxy {
-	p := &Proxy{configuredFilter: filter, log: newDomainLog()}
+	p := &Proxy{log: newDomainLog()}
+	p.configuredFilter.Store(filter)
 	if active {
 		p.activeFilter.Store(filter)
+		p.policyActive.Store(true)
 	}
 	return p
 }
 
 // EnablePolicy activates the configured filter.
 func (p *Proxy) EnablePolicy() {
-	p.activeFilter.Store(p.configuredFilter)
+	p.activeFilter.Store(p.configuredFilter.Load())
+	p.policyActive.Store(true)
 	log.Printf("[nfa] policy enabled")
+}
+
+// SetPolicy replaces the configured filter. If the policy is already active,
+// the new filter takes effect immediately.
+func (p *Proxy) SetPolicy(filter *Filter) {
+	p.configuredFilter.Store(filter)
+	if p.policyActive.Load() {
+		p.activeFilter.Store(filter)
+	}
+	log.Printf("[nfa] policy configured (count_mode=%t)", filter.IsCountMode())
 }
 
 func (p *Proxy) effectiveFilter() *Filter {
