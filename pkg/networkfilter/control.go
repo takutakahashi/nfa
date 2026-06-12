@@ -20,7 +20,7 @@ type policyRequest struct {
 	CountMode bool     `json:"count_mode,omitempty"`
 }
 
-// ControlServer exposes a minimal HTTP API on ControlPort (localhost only).
+// ControlServer exposes a minimal HTTP API on a TCP or Unix domain socket listener.
 //
 //   - POST /enable-policy — activate the configured filter (idempotent)
 //   - POST /policy        — replace the configured filter

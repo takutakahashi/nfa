@@ -11,6 +11,7 @@ import (
 type Config struct {
 	Filter         FilterConfig `yaml:"filter"`
 	DeferredPolicy bool         `yaml:"deferredPolicy"`
+	ControlSocket  string       `yaml:"controlSocket"`
 }
 
 // FilterConfig defines the domain filter policy.

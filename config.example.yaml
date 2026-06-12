@@ -32,8 +32,16 @@ filter:
     - "*.example.com"
     - "trusted.io"
 
+# controlSocket: optional Unix domain socket path for the control API.
+# When set, the control API listens only on this socket and does not bind
+# localhost:3129. Can also be set via --control-socket or
+# NETWORK_FILTER_CONTROL_SOCKET.
+# controlSocket: "/tmp/nfa-control.sock"
+
 # deferredPolicy: when true, the proxy starts in passthrough mode (all traffic
 # allowed) and the policy is activated only after:
 #   curl -X POST http://localhost:3129/enable-policy
+# or, when controlSocket is set:
+#   curl --unix-socket /tmp/nfa-control.sock -X POST http://localhost/enable-policy
 # Useful when the main container needs network access during startup.
 deferredPolicy: false
