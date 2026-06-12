@@ -63,6 +63,33 @@ func TestFilePolicyStoreSavePreservesDeferredPolicy(t *testing.T) {
 	}
 }
 
+func TestFilePolicyStoreSavePreservesControlSocket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nfa.yaml")
+	initial := []byte("filter:\n  mode: allowlist\n  domains:\n    - old.example\ncontrolSocket: /tmp/nfa-control.sock\n")
+	if err := os.WriteFile(path, initial, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	store := NewFilePolicyStore(path)
+	if err := store.Save(policy.Policy{Denied: []string{"bad.example"}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ControlSocket != "/tmp/nfa-control.sock" {
+		t.Fatalf("controlSocket = %q, want /tmp/nfa-control.sock", cfg.ControlSocket)
+	}
+	if cfg.Filter.Mode != "denylist" {
+		t.Fatalf("mode = %q, want denylist", cfg.Filter.Mode)
+	}
+	if !reflect.DeepEqual(cfg.Filter.Domains, []string{"bad.example"}) {
+		t.Fatalf("domains = %v, want [bad.example]", cfg.Filter.Domains)
+	}
+}
+
 func TestFilePolicyStoreSaveReadOnlyFileReturnsError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nfa.yaml")
 	initial := []byte("filter:\n  mode: allowlist\n  domains:\n    - old.example\n")

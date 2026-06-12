@@ -36,6 +36,7 @@ Count mode (--count-mode / NETWORK_FILTER_COUNT_MODE=true):
 Env vars:
   NETWORK_FILTER_ALLOWED_DOMAINS  comma-separated allowed domains (sets allowlist mode)
   NETWORK_FILTER_DENIED_DOMAINS   comma-separated denied domains  (sets denylist mode)
+  NETWORK_FILTER_CONTROL_SOCKET   Unix domain socket path for the control API
 
 A single listener on port 3128 handles:
   - HTTP CONNECT tunnels  (proxy-aware HTTPS via HTTP_PROXY/HTTPS_PROXY)
@@ -44,7 +45,9 @@ A single listener on port 3128 handles:
 
 When --deferred-policy is set, the proxy starts in passthrough mode and the
 configured policy is activated only after POST /enable-policy to the control
-server on port 3129 (localhost only).`,
+server. By default the control server listens on port 3129 (localhost only).
+When --control-socket is set, it listens only on that Unix domain socket and
+does not bind port 3129.`,
 	RunE: runProxy,
 }
 
@@ -58,6 +61,8 @@ func init() {
 		"Start in passthrough mode. Activate via POST /enable-policy on port 3129.")
 	proxyCmd.Flags().Bool("count-mode", false,
 		"Log would-be-blocked domains but do not reject traffic. Also via NETWORK_FILTER_COUNT_MODE.")
+	proxyCmd.Flags().String("control-socket", "",
+		"Unix domain socket path for the control API. Also via NETWORK_FILTER_CONTROL_SOCKET. When set, port 3129 is not used.")
 	proxyCmd.Flags().String("policy-store-file", "",
 		"Path to YAML config file where POST /policy persists policy. Defaults to --config when set.")
 }
@@ -88,12 +93,17 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	deniedFlag, _ := cmd.Flags().GetStringSlice("denied-domains")
 	deferredFlag, _ := cmd.Flags().GetBool("deferred-policy")
 	countModeFlag, _ := cmd.Flags().GetBool("count-mode")
+	controlSocketFlag, _ := cmd.Flags().GetString("control-socket")
 	policyStoreFile, _ := cmd.Flags().GetString("policy-store-file")
 
 	allowedDomains := parseDomains("NETWORK_FILTER_ALLOWED_DOMAINS", allowedFlag)
 	deniedDomains := parseDomains("NETWORK_FILTER_DENIED_DOMAINS", deniedFlag)
 	deferredPolicy := deferredFlag
 	countMode := countModeFlag || os.Getenv("NETWORK_FILTER_COUNT_MODE") == "true"
+	controlSocket := strings.TrimSpace(os.Getenv("NETWORK_FILTER_CONTROL_SOCKET"))
+	if controlSocketFlag != "" {
+		controlSocket = strings.TrimSpace(controlSocketFlag)
+	}
 
 	// Merge config file values when no CLI/env override was given.
 	if cfg != nil {
@@ -109,6 +119,9 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 		}
 		if !countMode {
 			countMode = cfg.Filter.IsCountMode()
+		}
+		if controlSocket == "" {
+			controlSocket = strings.TrimSpace(cfg.ControlSocket)
 		}
 	}
 
@@ -141,7 +154,7 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	}
 
 	if deferredPolicy {
-		log.Printf("[nfa] deferred-policy: policy inactive until POST /enable-policy on port %d", networkfilter.ControlPort)
+		log.Printf("[nfa] deferred-policy: policy inactive until POST /enable-policy on %s", controlEndpoint(controlSocket))
 	}
 
 	proxy := networkfilter.NewProxy(filter, !deferredPolicy)
@@ -154,11 +167,11 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 		policyStore = config.NewFilePolicyStore(policyStoreFile)
 	}
 
-	controlAddr := fmt.Sprintf("127.0.0.1:%d", networkfilter.ControlPort)
-	controlLis, err := net.Listen("tcp", controlAddr)
+	controlLis, cleanupControlSocket, err := listenControl(controlSocket)
 	if err != nil {
-		return fmt.Errorf("listen %s: %w", controlAddr, err)
+		return err
 	}
+	defer cleanupControlSocket()
 	go func() {
 		if err := networkfilter.NewControlServer(proxy, policyStore).Run(controlLis); err != nil {
 			log.Printf("[nfa] control server error: %v", err)
@@ -171,4 +184,43 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 	return proxy.Run(lis)
+}
+
+func listenControl(socketPath string) (net.Listener, func(), error) {
+	if socketPath == "" {
+		controlAddr := fmt.Sprintf("127.0.0.1:%d", networkfilter.ControlPort)
+		controlLis, err := net.Listen("tcp", controlAddr)
+		if err != nil {
+			return nil, func() {}, fmt.Errorf("listen %s: %w", controlAddr, err)
+		}
+		return controlLis, func() {}, nil
+	}
+
+	if st, err := os.Stat(socketPath); err == nil {
+		if st.Mode()&os.ModeSocket == 0 {
+			return nil, func() {}, fmt.Errorf("listen unix %s: path exists and is not a socket", socketPath)
+		}
+		if err := os.Remove(socketPath); err != nil {
+			return nil, func() {}, fmt.Errorf("remove stale unix socket %s: %w", socketPath, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, func() {}, fmt.Errorf("stat unix socket %s: %w", socketPath, err)
+	}
+
+	controlLis, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("listen unix %s: %w", socketPath, err)
+	}
+	return controlLis, func() {
+		if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("[nfa] remove unix socket %s: %v", socketPath, err)
+		}
+	}, nil
+}
+
+func controlEndpoint(socketPath string) string {
+	if socketPath != "" {
+		return fmt.Sprintf("unix socket %s", socketPath)
+	}
+	return fmt.Sprintf("port %d", networkfilter.ControlPort)
 }

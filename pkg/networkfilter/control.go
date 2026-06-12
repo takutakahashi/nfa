@@ -16,7 +16,7 @@ type domainsResponse struct {
 	Denied  []string `json:"denied"`
 }
 
-// ControlServer exposes a minimal HTTP API on ControlPort (localhost only).
+// ControlServer exposes a minimal HTTP API on a TCP or Unix domain socket listener.
 //
 //   - POST /enable-policy — activate the configured filter (idempotent)
 //   - POST /policy        — replace the configured filter
