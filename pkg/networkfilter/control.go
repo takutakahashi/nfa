@@ -22,8 +22,9 @@ type domainsResponse struct {
 //   - POST /policy        — replace the configured filter
 //   - GET  /domains       — return domains the proxy has actually allowed and denied
 type ControlServer struct {
-	proxy *Proxy
-	store policy.Store
+	proxy                  *Proxy
+	store                  policy.Store
+	directAllowlistUpdater DirectAllowlistUpdater
 }
 
 // NewControlServer creates a ControlServer that operates on the given proxy.
@@ -33,6 +34,16 @@ func NewControlServer(proxy *Proxy, stores ...policy.Store) *ControlServer {
 		store = stores[0]
 	}
 	return &ControlServer{proxy: proxy, store: store}
+}
+
+// DirectAllowlistUpdater applies direct TCP allowlist changes to the runtime.
+type DirectAllowlistUpdater interface {
+	UpdateDirectAllowlist([]string) error
+}
+
+// SetDirectAllowlistUpdater configures runtime direct TCP allowlist updates.
+func (c *ControlServer) SetDirectAllowlistUpdater(updater DirectAllowlistUpdater) {
+	c.directAllowlistUpdater = updater
 }
 
 // Run starts the HTTP control server on lis and blocks until lis is closed.
@@ -59,6 +70,12 @@ func (c *ControlServer) Handler() http.Handler {
 		if c.store != nil {
 			if err := c.store.Save(pol); err != nil {
 				http.Error(w, fmt.Sprintf("persist policy: %v", err), http.StatusInternalServerError)
+				return
+			}
+		}
+		if c.directAllowlistUpdater != nil {
+			if err := c.directAllowlistUpdater.UpdateDirectAllowlist(pol.Allowed); err != nil {
+				http.Error(w, fmt.Sprintf("update direct allowlist: %v", err), http.StatusInternalServerError)
 				return
 			}
 		}
