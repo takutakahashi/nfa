@@ -2,6 +2,7 @@ package networkfilter
 
 import (
 	"fmt"
+	"net"
 	"os/exec"
 	"strings"
 )
@@ -9,6 +10,11 @@ import (
 // SidecarUID is the UID the nfa sidecar runs as.
 // iptables OUTPUT rules exempt this UID so the sidecar can reach real upstreams.
 const SidecarUID = 0
+
+const (
+	directAllowFilterChain = "NFA_DIRECT_ALLOW"
+	directAllowNATChain    = "NFA_DIRECT_ALLOW"
+)
 
 type tableRule struct {
 	table string
@@ -20,14 +26,18 @@ func iptablesRules() []tableRule {
 	sidecarUID := fmt.Sprintf("%d", SidecarUID)
 
 	return []tableRule{
+		{"filter", []string{"-N", directAllowFilterChain}},
 		{"filter", []string{"-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-m", "owner", "--uid-owner", sidecarUID, "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.1", "--dport", proxyPort, "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"}},
+		{"filter", []string{"-A", "OUTPUT", "-p", "tcp", "-j", directAllowFilterChain}},
 		{"filter", []string{"-A", "OUTPUT", "-p", "tcp", "-j", "REJECT", "--reject-with", "tcp-reset"}},
 
+		{"nat", []string{"-N", directAllowNATChain}},
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.1", "-j", "RETURN"}},
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "-m", "owner", "--uid-owner", sidecarUID, "-j", "RETURN"}},
+		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "-j", directAllowNATChain}},
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-port", proxyPort}},
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "--dport", "443", "-j", "REDIRECT", "--to-port", proxyPort}},
 	}
@@ -50,6 +60,122 @@ func SetupIPTables() error {
 		}
 	}
 	return nil
+}
+
+// UpdateDirectAllowlist configures direct TCP destinations that bypass the
+// transparent HTTP/TLS redirects and the default TCP reject rule. Only IPv4
+// addresses and CIDRs are applied; hostnames remain proxy-only policy entries.
+func UpdateDirectAllowlist(entries []string) error {
+	cidrs := DirectAllowlistCIDRs(entries)
+	if err := ensureDirectAllowlistChains(); err != nil {
+		return err
+	}
+	if err := flushChain("filter", directAllowFilterChain); err != nil {
+		return err
+	}
+	if err := flushChain("nat", directAllowNATChain); err != nil {
+		return err
+	}
+	for _, cidr := range cidrs {
+		if err := runIPTables("filter", "-A", directAllowFilterChain, "-p", "tcp", "-d", cidr, "-j", "ACCEPT"); err != nil {
+			return err
+		}
+		if err := runIPTables("nat", "-A", directAllowNATChain, "-p", "tcp", "-d", cidr, "-j", "RETURN"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// IPTablesDirectAllowlistUpdater applies direct allowlist entries with iptables.
+type IPTablesDirectAllowlistUpdater struct{}
+
+func (IPTablesDirectAllowlistUpdater) UpdateDirectAllowlist(entries []string) error {
+	return UpdateDirectAllowlist(entries)
+}
+
+func ensureDirectAllowlistChains() error {
+	for _, table := range []string{"filter", "nat"} {
+		chain := directAllowFilterChain
+		if table == "nat" {
+			chain = directAllowNATChain
+		}
+		if err := runIPTablesAllowExists(table, "-N", chain); err != nil {
+			return err
+		}
+		if err := ensureOutputJump(table, chain); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureOutputJump(table, chain string) error {
+	checkArgs := []string{"-t", table, "-C", "OUTPUT", "-p", "tcp", "-j", chain}
+	if err := exec.Command("iptables", checkArgs...).Run(); err == nil {
+		return nil
+	}
+	return runIPTables(table, "-I", "OUTPUT", "1", "-p", "tcp", "-j", chain)
+}
+
+func flushChain(table, chain string) error {
+	return runIPTables(table, "-F", chain)
+}
+
+func runIPTables(table string, args ...string) error {
+	cmdArgs := append([]string{"-t", table}, args...)
+	if out, err := exec.Command("iptables", cmdArgs...).CombinedOutput(); err != nil {
+		return fmt.Errorf("iptables %v: %w\noutput: %s", cmdArgs, err, out)
+	}
+	return nil
+}
+
+func runIPTablesAllowExists(table string, args ...string) error {
+	cmdArgs := append([]string{"-t", table}, args...)
+	if out, err := exec.Command("iptables", cmdArgs...).CombinedOutput(); err != nil {
+		if strings.Contains(string(out), "Chain already exists") {
+			return nil
+		}
+		return fmt.Errorf("iptables %v: %w\noutput: %s", cmdArgs, err, out)
+	}
+	return nil
+}
+
+// DirectAllowlistCIDRs extracts IPv4 addresses and CIDRs from policy entries.
+func DirectAllowlistCIDRs(entries []string) []string {
+	out := make([]string, 0, len(entries))
+	seen := map[string]struct{}{}
+	for _, entry := range entries {
+		cidr, ok := directAllowlistCIDR(entry)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[cidr]; exists {
+			continue
+		}
+		seen[cidr] = struct{}{}
+		out = append(out, cidr)
+	}
+	return out
+}
+
+func directAllowlistCIDR(entry string) (string, bool) {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return "", false
+	}
+	ip := net.ParseIP(entry)
+	if ip4 := ip.To4(); ip4 != nil {
+		return ip4.String() + "/32", true
+	}
+	_, ipNet, err := net.ParseCIDR(entry)
+	if err != nil {
+		return "", false
+	}
+	if ipNet.IP.To4() == nil {
+		return "", false
+	}
+	return ipNet.String(), true
 }
 
 // GenerateIPTablesRestore returns a string in iptables-save/iptables-restore

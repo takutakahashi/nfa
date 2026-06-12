@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/takutakahashi/nfa/pkg/policy"
@@ -22,6 +23,18 @@ func (s *recordingPolicyStore) Save(pol policy.Policy) error {
 	s.calls++
 	s.policy = pol
 	return s.err
+}
+
+type recordingDirectAllowlistUpdater struct {
+	entries []string
+	err     error
+	calls   int
+}
+
+func (u *recordingDirectAllowlistUpdater) UpdateDirectAllowlist(entries []string) error {
+	u.calls++
+	u.entries = append([]string(nil), entries...)
+	return u.err
 }
 
 func newControlHandler(proxy *Proxy, stores ...policy.Store) http.Handler {
@@ -145,6 +158,53 @@ func TestControlPolicyUpdatesActiveFilter(t *testing.T) {
 	}
 	if got := filter.Check("blocked.example.net"); got != FilterResultBlocked {
 		t.Fatalf("Check(blocked.example.net) = %s, want blocked", got)
+	}
+}
+
+func TestControlPolicyUpdatesDirectAllowlist(t *testing.T) {
+	proxy := NewProxy(NewFilter(nil), true)
+	updater := &recordingDirectAllowlistUpdater{}
+	control := NewControlServer(proxy)
+	control.SetDirectAllowlistUpdater(updater)
+	handler := control.Handler()
+
+	body := bytes.NewBufferString(`{"allowed":["example.com","192.0.2.10","198.51.100.0/24"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/policy", body)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if updater.calls != 1 {
+		t.Fatalf("updater calls = %d, want 1", updater.calls)
+	}
+	want := []string{"example.com", "192.0.2.10", "198.51.100.0/24"}
+	if strings.Join(updater.entries, ",") != strings.Join(want, ",") {
+		t.Fatalf("updater entries = %v, want %v", updater.entries, want)
+	}
+}
+
+func TestControlPolicyDoesNotUpdateFilterWhenDirectAllowlistFails(t *testing.T) {
+	proxy := NewProxy(NewFilter([]string{"old.example"}), true)
+	updater := &recordingDirectAllowlistUpdater{err: errors.New("iptables failed")}
+	control := NewControlServer(proxy)
+	control.SetDirectAllowlistUpdater(updater)
+	handler := control.Handler()
+
+	body := bytes.NewBufferString(`{"allowed":["new.example","192.0.2.10"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/policy", body)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+
+	filter := proxy.effectiveFilter()
+	if got := filter.Check("new.example"); got != FilterResultAllowed {
+		t.Fatalf("Check(new.example) = %s, want allowed", got)
+	}
+	if got := filter.Check("old.example"); got != FilterResultBlocked {
+		t.Fatalf("Check(old.example) = %s, want blocked", got)
 	}
 }
 

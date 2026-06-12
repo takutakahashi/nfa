@@ -157,6 +157,14 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 		log.Printf("[nfa] deferred-policy: policy inactive until POST /enable-policy on %s", controlEndpoint(controlSocket))
 	}
 
+	directAllowlistUpdater := networkfilter.IPTablesDirectAllowlistUpdater{}
+	if len(networkfilter.DirectAllowlistCIDRs(allowedDomains)) > 0 {
+		log.Printf("[nfa] configuring direct TCP allowlist: %v", networkfilter.DirectAllowlistCIDRs(allowedDomains))
+		if err := directAllowlistUpdater.UpdateDirectAllowlist(allowedDomains); err != nil {
+			return fmt.Errorf("direct allowlist setup failed: %w", err)
+		}
+	}
+
 	proxy := networkfilter.NewProxy(filter, !deferredPolicy)
 	if policyStoreFile == "" {
 		policyStoreFile = cfgPath
@@ -173,7 +181,9 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	}
 	defer cleanupControlSocket()
 	go func() {
-		if err := networkfilter.NewControlServer(proxy, policyStore).Run(controlLis); err != nil {
+		controlServer := networkfilter.NewControlServer(proxy, policyStore)
+		controlServer.SetDirectAllowlistUpdater(directAllowlistUpdater)
+		if err := controlServer.Run(controlLis); err != nil {
 			log.Printf("[nfa] control server error: %v", err)
 		}
 	}()

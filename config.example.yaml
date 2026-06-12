@@ -30,8 +30,8 @@ filter:
   #   *.example.com          — any subdomain of example.com
   #   prefix.*.example.com   — prefix + any single label + suffix
   #   exact.com              — exact hostname match
-  #   192.0.2.10             — exact IP address match
-  #   198.51.100.0/24        — IP CIDR match
+  #   192.0.2.10             — exact IPv4 address match; also allows direct TCP
+  #   198.51.100.0/24        — IPv4 CIDR match; also allows direct TCP
   domains:
     - "example.com"
     - "*.example.com"
