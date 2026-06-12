@@ -51,6 +51,8 @@ does not bind port 3129.`,
 	RunE: runProxy,
 }
 
+var setupIPTables = networkfilter.SetupIPTables
+
 func init() {
 	proxyCmd.Flags().String("config", "", "Path to YAML config file")
 	proxyCmd.Flags().StringSlice("allowed-domains", nil,
@@ -65,6 +67,8 @@ func init() {
 		"Unix domain socket path for the control API. Also via NETWORK_FILTER_CONTROL_SOCKET. When set, port 3129 is not used.")
 	proxyCmd.Flags().String("policy-store-file", "",
 		"Path to YAML config file where POST /policy persists policy. Defaults to --config when set.")
+	proxyCmd.Flags().Bool("with-setup", false,
+		"Apply nfa iptables rules before starting the proxy. Requires CAP_NET_ADMIN.")
 }
 
 func runProxy(cmd *cobra.Command, _ []string) error {
@@ -95,6 +99,7 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	countModeFlag, _ := cmd.Flags().GetBool("count-mode")
 	controlSocketFlag, _ := cmd.Flags().GetString("control-socket")
 	policyStoreFile, _ := cmd.Flags().GetString("policy-store-file")
+	withSetup, _ := cmd.Flags().GetBool("with-setup")
 
 	allowedDomains := parseDomains("NETWORK_FILTER_ALLOWED_DOMAINS", allowedFlag)
 	deniedDomains := parseDomains("NETWORK_FILTER_DENIED_DOMAINS", deniedFlag)
@@ -157,6 +162,10 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 		log.Printf("[nfa] deferred-policy: policy inactive until POST /enable-policy on %s", controlEndpoint(controlSocket))
 	}
 
+	if err := maybeSetupIPTables(withSetup); err != nil {
+		return err
+	}
+
 	directAllowlistUpdater := networkfilter.IPTablesDirectAllowlistUpdater{}
 	if len(networkfilter.DirectAllowlistCIDRs(allowedDomains)) > 0 {
 		log.Printf("[nfa] configuring direct TCP allowlist: %v", networkfilter.DirectAllowlistCIDRs(allowedDomains))
@@ -194,6 +203,18 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 	return proxy.Run(lis)
+}
+
+func maybeSetupIPTables(withSetup bool) error {
+	if !withSetup {
+		return nil
+	}
+	log.Println("[nfa] applying iptables setup before proxy start...")
+	if err := setupIPTables(); err != nil {
+		return fmt.Errorf("iptables setup failed: %w", err)
+	}
+	log.Println("[nfa] iptables setup applied successfully")
+	return nil
 }
 
 func listenControl(socketPath string) (net.Listener, func(), error) {
