@@ -66,7 +66,7 @@ func NewCountAllowlistFilter(allowedDomains []string) *Filter {
 type FilterResult int
 
 const (
-	FilterResultAllowed  FilterResult = iota
+	FilterResultAllowed FilterResult = iota
 	FilterResultBypassed
 	FilterResultBlocked
 )
