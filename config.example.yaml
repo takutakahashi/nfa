@@ -1,6 +1,6 @@
 # nfa — network filter for agent
 # Example configuration file.
-# Pass it with: nfa proxy --config config.yaml
+# Pass it with: nfa proxy --with-setup --config config.yaml
 #
 # CLI flags and environment variables (NETWORK_FILTER_ALLOWED_DOMAINS,
 # NETWORK_FILTER_DENIED_DOMAINS) take precedence over this file.

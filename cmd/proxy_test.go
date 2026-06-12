@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,5 +36,61 @@ func TestListenControlRejectsExistingNonSocketPath(t *testing.T) {
 		cleanup()
 		_ = lis.Close()
 		t.Fatal("listenControl() error = nil, want error")
+	}
+}
+
+func TestProxyCommandHasWithSetupFlag(t *testing.T) {
+	flag := proxyCmd.Flags().Lookup("with-setup")
+	if flag == nil {
+		t.Fatal("proxy --with-setup flag is not registered")
+	}
+}
+
+func TestMaybeSetupIPTablesSkipsWhenDisabled(t *testing.T) {
+	oldSetup := setupIPTables
+	defer func() { setupIPTables = oldSetup }()
+
+	called := false
+	setupIPTables = func() error {
+		called = true
+		return nil
+	}
+
+	if err := maybeSetupIPTables(false); err != nil {
+		t.Fatalf("maybeSetupIPTables(false): %v", err)
+	}
+	if called {
+		t.Fatal("setupIPTables called when withSetup=false")
+	}
+}
+
+func TestMaybeSetupIPTablesRunsWhenEnabled(t *testing.T) {
+	oldSetup := setupIPTables
+	defer func() { setupIPTables = oldSetup }()
+
+	called := false
+	setupIPTables = func() error {
+		called = true
+		return nil
+	}
+
+	if err := maybeSetupIPTables(true); err != nil {
+		t.Fatalf("maybeSetupIPTables(true): %v", err)
+	}
+	if !called {
+		t.Fatal("setupIPTables was not called")
+	}
+}
+
+func TestMaybeSetupIPTablesReturnsSetupError(t *testing.T) {
+	oldSetup := setupIPTables
+	defer func() { setupIPTables = oldSetup }()
+
+	setupIPTables = func() error {
+		return errors.New("net admin missing")
+	}
+
+	if err := maybeSetupIPTables(true); err == nil {
+		t.Fatal("maybeSetupIPTables(true) error = nil, want error")
 	}
 }

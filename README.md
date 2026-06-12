@@ -10,6 +10,12 @@ YAML file, start the proxy with either:
 nfa proxy --config config.yaml
 ```
 
+To apply the iptables setup and start the proxy in one command, use:
+
+```sh
+nfa proxy --with-setup --config config.yaml
+```
+
 or:
 
 ```sh
