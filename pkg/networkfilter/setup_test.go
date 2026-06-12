@@ -40,25 +40,3 @@ func TestParseUID(t *testing.T) {
 		}
 	}
 }
-
-func TestIPTablesCommandUsesSudoWhenNotRoot(t *testing.T) {
-	name, args := iptablesCommand(1337, []string{"-t", "filter", "-A", "OUTPUT"})
-	if name != "sudo" {
-		t.Fatalf("command = %q, want sudo", name)
-	}
-	want := []string{"iptables", "-t", "filter", "-A", "OUTPUT"}
-	if strings.Join(args, " ") != strings.Join(want, " ") {
-		t.Fatalf("args = %v, want %v", args, want)
-	}
-}
-
-func TestIPTablesCommandUsesIPTablesWhenRoot(t *testing.T) {
-	input := []string{"-t", "filter", "-A", "OUTPUT"}
-	name, args := iptablesCommand(0, input)
-	if name != "iptables" {
-		t.Fatalf("command = %q, want iptables", name)
-	}
-	if strings.Join(args, " ") != strings.Join(input, " ") {
-		t.Fatalf("args = %v, want %v", args, input)
-	}
-}

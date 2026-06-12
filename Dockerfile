@@ -9,11 +9,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /nfa .
 
 FROM alpine:3.21
 
-RUN apk add --no-cache iptables sudo \
+RUN apk add --no-cache iptables \
     && addgroup -g 1337 nfa \
-    && adduser -D -u 1337 -G nfa nfa \
-    && echo "nfa ALL=(root) NOPASSWD: /sbin/iptables" > /etc/sudoers.d/nfa \
-    && chmod 0440 /etc/sudoers.d/nfa
+    && adduser -D -u 1337 -G nfa nfa
 
 COPY --from=builder /nfa /usr/local/bin/nfa
 
