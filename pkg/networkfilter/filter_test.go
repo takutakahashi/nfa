@@ -72,6 +72,50 @@ func TestDenylistFilterEmptyAllowsAll(t *testing.T) {
 	}
 }
 
+func TestFilterBlocksIPLiteralHosts(t *testing.T) {
+	filters := map[string]*Filter{
+		"denylist":  NewFilter(nil),
+		"allowlist": NewAllowlistFilter([]string{"example.com"}),
+	}
+	cases := []string{
+		"192.0.2.10",
+		"192.0.2.10:80",
+		"192.0.2.10.",
+		"[2001:db8::1]",
+		"[2001:db8::1]:443",
+		"2001:db8::1",
+	}
+	for name, f := range filters {
+		for _, host := range cases {
+			if r := f.Check(host); r != FilterResultBlocked {
+				t.Errorf("%s Check(%q) = %v, want blocked", name, host, r)
+			}
+		}
+	}
+}
+
+func TestAllowlistFilterAllowsIPLiteralHosts(t *testing.T) {
+	f := NewAllowlistFilter([]string{
+		"192.0.2.10",
+		"198.51.100.0/24",
+		"2001:db8::/32",
+		"example.com",
+	})
+	cases := []string{
+		"192.0.2.10",
+		"192.0.2.10:80",
+		"198.51.100.42",
+		"[2001:db8::1]",
+		"[2001:db8::1]:443",
+		"2001:db8::1",
+	}
+	for _, host := range cases {
+		if r := f.Check(host); r != FilterResultAllowed {
+			t.Errorf("Check(%q) = %v, want allowed", host, r)
+		}
+	}
+}
+
 func TestBypassDomains(t *testing.T) {
 	f := NewAllowlistFilter([]string{"example.com"})
 	bypassed := []string{

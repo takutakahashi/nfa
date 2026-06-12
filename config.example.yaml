@@ -25,11 +25,13 @@ filter:
   # Can also be set via --count-mode flag or NETWORK_FILTER_COUNT_MODE=true.
   countMode: false
 
-  # domains is the list of patterns to apply in the chosen mode.
-  # Patterns support:
+  # domains is the list of host patterns to apply in the chosen mode.
+  # Entries support:
   #   *.example.com          — any subdomain of example.com
   #   prefix.*.example.com   — prefix + any single label + suffix
   #   exact.com              — exact hostname match
+  #   192.0.2.10             — exact IP address match
+  #   198.51.100.0/24        — IP CIDR match
   domains:
     - "example.com"
     - "*.example.com"
