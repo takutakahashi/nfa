@@ -1,6 +1,7 @@
 package networkfilter
 
 import (
+	"net"
 	"strings"
 )
 
@@ -83,13 +84,17 @@ func (r FilterResult) String() string {
 
 // Check returns the FilterResult for the given host.
 func (f *Filter) Check(host string) FilterResult {
-	h := strings.ToLower(host)
-	if idx := strings.LastIndex(h, ":"); idx != -1 {
-		if strings.Contains(h[idx:], ":") || !strings.Contains(h, "[") {
-			h = h[:idx]
+	h := normalizeHost(host)
+	if net.ParseIP(h) != nil {
+		if f.allowlistMode {
+			for _, allowed := range f.allowedDomains {
+				if matchAllowedHost(h, allowed) {
+					return FilterResultAllowed
+				}
+			}
 		}
+		return FilterResultBlocked
 	}
-	h = strings.TrimSuffix(h, ".")
 
 	for _, bypass := range bypassDomains {
 		if matchDomain(h, bypass) {
@@ -99,7 +104,7 @@ func (f *Filter) Check(host string) FilterResult {
 
 	if f.allowlistMode {
 		for _, allowed := range f.allowedDomains {
-			if matchDomain(h, allowed) {
+			if matchAllowedHost(h, allowed) {
 				return FilterResultAllowed
 			}
 		}
@@ -112,6 +117,33 @@ func (f *Filter) Check(host string) FilterResult {
 		}
 	}
 	return FilterResultAllowed
+}
+
+func normalizeHost(host string) string {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if splitHost, _, err := net.SplitHostPort(h); err == nil {
+		h = splitHost
+	} else if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
+		h = strings.TrimPrefix(strings.TrimSuffix(h, "]"), "[")
+	} else if strings.Count(h, ":") == 1 {
+		if idx := strings.LastIndex(h, ":"); idx != -1 {
+			h = h[:idx]
+		}
+	}
+	return strings.TrimSuffix(h, ".")
+}
+
+func matchAllowedHost(host, pattern string) bool {
+	if _, ipNet, err := net.ParseCIDR(pattern); err == nil {
+		if ip := net.ParseIP(host); ip != nil {
+			return ipNet.Contains(ip)
+		}
+	}
+	normalizedPattern := normalizeHost(pattern)
+	if net.ParseIP(host) != nil || net.ParseIP(normalizedPattern) != nil {
+		return host == normalizedPattern
+	}
+	return matchDomain(host, normalizedPattern)
 }
 
 // IsDenied returns true when host should be blocked.
