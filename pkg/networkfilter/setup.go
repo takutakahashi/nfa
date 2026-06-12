@@ -64,12 +64,20 @@ func SetupIPTables() error {
 func SetupIPTablesForUID(sidecarUID int) error {
 	for _, rule := range iptablesRules(sidecarUID) {
 		args := append([]string{"-t", rule.table}, rule.args...)
-		cmd := exec.Command("iptables", args...)
+		cmdName, cmdArgs := iptablesCommand(os.Geteuid(), args)
+		cmd := exec.Command(cmdName, cmdArgs...)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("iptables -t %s %v: %w\noutput: %s", rule.table, rule.args, err, out)
+			return fmt.Errorf("%s %v: %w\noutput: %s", cmdName, cmdArgs, err, out)
 		}
 	}
 	return nil
+}
+
+func iptablesCommand(euid int, args []string) (string, []string) {
+	if euid == 0 {
+		return "iptables", args
+	}
+	return "sudo", append([]string{"iptables"}, args...)
 }
 
 // GenerateIPTablesRestore returns a string in iptables-save/iptables-restore

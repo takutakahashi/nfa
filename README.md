@@ -33,3 +33,7 @@ nfa setup-iptables --output - --sidecar-uid 1337
 
 `NETWORK_FILTER_SIDECAR_UID` can also be used. If setup runs as root but the
 proxy runs as another user, pass the proxy user's UID explicitly.
+
+The published container runs `nfa` as UID `1337` and includes passwordless sudo
+for `iptables`, so `nfa setup` can install rules while the proxy itself remains
+non-root.
