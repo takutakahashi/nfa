@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/takutakahashi/nfa/pkg/config"
 	"github.com/takutakahashi/nfa/pkg/networkfilter"
+	"github.com/takutakahashi/nfa/pkg/policy"
 )
 
 var proxyCmd = &cobra.Command{
@@ -57,12 +58,15 @@ func init() {
 		"Start in passthrough mode. Activate via POST /enable-policy on port 3129.")
 	proxyCmd.Flags().Bool("count-mode", false,
 		"Log would-be-blocked domains but do not reject traffic. Also via NETWORK_FILTER_COUNT_MODE.")
+	proxyCmd.Flags().String("policy-store-file", "",
+		"Path to YAML config file where POST /policy persists policy. Defaults to --config when set.")
 }
 
 func runProxy(cmd *cobra.Command, _ []string) error {
 	// Load optional config file first (lowest precedence).
 	var cfg *config.Config
-	if cfgPath, _ := cmd.Flags().GetString("config"); cfgPath != "" {
+	cfgPath, _ := cmd.Flags().GetString("config")
+	if cfgPath != "" {
 		var err error
 		cfg, err = config.Load(cfgPath)
 		if err != nil {
@@ -84,6 +88,7 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	deniedFlag, _ := cmd.Flags().GetStringSlice("denied-domains")
 	deferredFlag, _ := cmd.Flags().GetBool("deferred-policy")
 	countModeFlag, _ := cmd.Flags().GetBool("count-mode")
+	policyStoreFile, _ := cmd.Flags().GetString("policy-store-file")
 
 	allowedDomains := parseDomains("NETWORK_FILTER_ALLOWED_DOMAINS", allowedFlag)
 	deniedDomains := parseDomains("NETWORK_FILTER_DENIED_DOMAINS", deniedFlag)
@@ -140,6 +145,14 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	}
 
 	proxy := networkfilter.NewProxy(filter, !deferredPolicy)
+	if policyStoreFile == "" {
+		policyStoreFile = cfgPath
+	}
+	var policyStore policy.Store
+	if policyStoreFile != "" {
+		log.Printf("[nfa] policy persistence file: %s", policyStoreFile)
+		policyStore = config.NewFilePolicyStore(policyStoreFile)
+	}
 
 	controlAddr := fmt.Sprintf("127.0.0.1:%d", networkfilter.ControlPort)
 	controlLis, err := net.Listen("tcp", controlAddr)
@@ -147,7 +160,7 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("listen %s: %w", controlAddr, err)
 	}
 	go func() {
-		if err := networkfilter.NewControlServer(proxy).Run(controlLis); err != nil {
+		if err := networkfilter.NewControlServer(proxy, policyStore).Run(controlLis); err != nil {
 			log.Printf("[nfa] control server error: %v", err)
 		}
 	}()
