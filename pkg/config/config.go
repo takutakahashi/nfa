@@ -3,7 +3,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
+	"github.com/takutakahashi/nfa/pkg/policy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -42,6 +44,78 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
 	return &cfg, nil
+}
+
+// FilePolicyStore persists policy updates to a YAML config file.
+type FilePolicyStore struct {
+	Path string
+}
+
+// NewFilePolicyStore creates a file-backed policy store.
+func NewFilePolicyStore(path string) *FilePolicyStore {
+	return &FilePolicyStore{Path: path}
+}
+
+// Save writes the policy into the file's filter section, preserving other config fields.
+func (s *FilePolicyStore) Save(pol policy.Policy) error {
+	cfg := Config{}
+	if data, err := os.ReadFile(s.Path); err == nil {
+		info, err := os.Stat(s.Path)
+		if err != nil {
+			return fmt.Errorf("stat config %s: %w", s.Path, err)
+		}
+		if info.Mode().Perm()&0o222 == 0 {
+			return fmt.Errorf("config %s is read-only", s.Path)
+		}
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			return fmt.Errorf("parsing config %s: %w", s.Path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("reading config %s: %w", s.Path, err)
+	}
+
+	cfg.Filter.CountMode = pol.CountMode
+	switch {
+	case len(pol.Allowed) > 0:
+		cfg.Filter.Mode = "allowlist"
+		cfg.Filter.Domains = pol.Allowed
+	case len(pol.Denied) > 0:
+		cfg.Filter.Mode = "denylist"
+		cfg.Filter.Domains = pol.Denied
+	default:
+		cfg.Filter.Mode = "allowlist"
+		cfg.Filter.Domains = []string{}
+	}
+
+	data, err := yaml.Marshal(&cfg)
+	if err != nil {
+		return fmt.Errorf("marshaling config %s: %w", s.Path, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(s.Path), 0o755); err != nil {
+		return fmt.Errorf("creating config dir %s: %w", filepath.Dir(s.Path), err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(s.Path), ".nfa-policy-*.yaml")
+	if err != nil {
+		return fmt.Errorf("creating temp config %s: %w", s.Path, err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) //nolint:errcheck
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing temp config %s: %w", tmpName, err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp config %s: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp config %s: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, s.Path); err != nil {
+		return fmt.Errorf("replacing config %s: %w", s.Path, err)
+	}
+	return nil
 }
 
 // IsAllowlist returns true when Mode is "allowlist".

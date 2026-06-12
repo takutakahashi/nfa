@@ -4,6 +4,9 @@
 #
 # CLI flags and environment variables (NETWORK_FILTER_ALLOWED_DOMAINS,
 # NETWORK_FILTER_DENIED_DOMAINS) take precedence over this file.
+#
+# Runtime updates through POST /policy are persisted to --policy-store-file
+# when set, otherwise to this --config file.
 
 filter:
   # mode: "allowlist" or "denylist"

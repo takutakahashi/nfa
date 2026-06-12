@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/takutakahashi/nfa/pkg/config"
 	"github.com/takutakahashi/nfa/pkg/networkfilter"
+	"github.com/takutakahashi/nfa/pkg/policy"
 )
 
 var proxyCmd = &cobra.Command{
@@ -62,12 +63,15 @@ func init() {
 		"Log would-be-blocked domains but do not reject traffic. Also via NETWORK_FILTER_COUNT_MODE.")
 	proxyCmd.Flags().String("control-socket", "",
 		"Unix domain socket path for the control API. Also via NETWORK_FILTER_CONTROL_SOCKET. When set, port 3129 is not used.")
+	proxyCmd.Flags().String("policy-store-file", "",
+		"Path to YAML config file where POST /policy persists policy. Defaults to --config when set.")
 }
 
 func runProxy(cmd *cobra.Command, _ []string) error {
 	// Load optional config file first (lowest precedence).
 	var cfg *config.Config
-	if cfgPath, _ := cmd.Flags().GetString("config"); cfgPath != "" {
+	cfgPath, _ := cmd.Flags().GetString("config")
+	if cfgPath != "" {
 		var err error
 		cfg, err = config.Load(cfgPath)
 		if err != nil {
@@ -90,6 +94,7 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	deferredFlag, _ := cmd.Flags().GetBool("deferred-policy")
 	countModeFlag, _ := cmd.Flags().GetBool("count-mode")
 	controlSocketFlag, _ := cmd.Flags().GetString("control-socket")
+	policyStoreFile, _ := cmd.Flags().GetString("policy-store-file")
 
 	allowedDomains := parseDomains("NETWORK_FILTER_ALLOWED_DOMAINS", allowedFlag)
 	deniedDomains := parseDomains("NETWORK_FILTER_DENIED_DOMAINS", deniedFlag)
@@ -153,6 +158,14 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	}
 
 	proxy := networkfilter.NewProxy(filter, !deferredPolicy)
+	if policyStoreFile == "" {
+		policyStoreFile = cfgPath
+	}
+	var policyStore policy.Store
+	if policyStoreFile != "" {
+		log.Printf("[nfa] policy persistence file: %s", policyStoreFile)
+		policyStore = config.NewFilePolicyStore(policyStoreFile)
+	}
 
 	controlLis, cleanupControlSocket, err := listenControl(controlSocket)
 	if err != nil {
@@ -160,7 +173,7 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	}
 	defer cleanupControlSocket()
 	go func() {
-		if err := networkfilter.NewControlServer(proxy).Run(controlLis); err != nil {
+		if err := networkfilter.NewControlServer(proxy, policyStore).Run(controlLis); err != nil {
 			log.Printf("[nfa] control server error: %v", err)
 		}
 	}()

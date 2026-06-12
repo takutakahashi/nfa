@@ -3,35 +3,29 @@ package networkfilter
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sort"
 	"testing"
+
+	"github.com/takutakahashi/nfa/pkg/policy"
 )
 
-func newControlHandler(proxy *Proxy) http.Handler {
-	cs := NewControlServer(proxy)
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /enable-policy", func(w http.ResponseWriter, r *http.Request) {
-		cs.proxy.EnablePolicy()
-		w.WriteHeader(http.StatusOK)
-	})
-	mux.HandleFunc("POST /policy", func(w http.ResponseWriter, r *http.Request) {
-		var req policyRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		cs.proxy.SetPolicy(newFilterFromPolicy(req))
-		w.WriteHeader(http.StatusOK)
-	})
-	mux.HandleFunc("GET /domains", func(w http.ResponseWriter, _ *http.Request) {
-		allowed, denied := cs.proxy.log.snapshot()
-		resp := domainsResponse{Allowed: allowed, Denied: denied}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-	return mux
+type recordingPolicyStore struct {
+	policy policy.Policy
+	err    error
+	calls  int
+}
+
+func (s *recordingPolicyStore) Save(pol policy.Policy) error {
+	s.calls++
+	s.policy = pol
+	return s.err
+}
+
+func newControlHandler(proxy *Proxy, stores ...policy.Store) http.Handler {
+	return NewControlServer(proxy, stores...).Handler()
 }
 
 func getDomainsResponse(t *testing.T, handler http.Handler) domainsResponse {
@@ -151,5 +145,50 @@ func TestControlPolicyUpdatesActiveFilter(t *testing.T) {
 	}
 	if got := filter.Check("blocked.example.net"); got != FilterResultBlocked {
 		t.Fatalf("Check(blocked.example.net) = %s, want blocked", got)
+	}
+}
+
+func TestControlPolicyPersistsPolicy(t *testing.T) {
+	proxy := NewProxy(NewFilter(nil), true)
+	store := &recordingPolicyStore{}
+	handler := newControlHandler(proxy, store)
+
+	body := bytes.NewBufferString(`{"denied":["bad.example"],"count_mode":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/policy", body)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if store.calls != 1 {
+		t.Fatalf("store calls = %d, want 1", store.calls)
+	}
+	if !store.policy.CountMode {
+		t.Fatal("stored CountMode = false, want true")
+	}
+	if len(store.policy.Denied) != 1 || store.policy.Denied[0] != "bad.example" {
+		t.Fatalf("stored Denied = %v, want [bad.example]", store.policy.Denied)
+	}
+}
+
+func TestControlPolicyDoesNotUpdateFilterWhenPersistenceFails(t *testing.T) {
+	proxy := NewProxy(NewFilter([]string{"old.example"}), true)
+	store := &recordingPolicyStore{err: errors.New("disk full")}
+	handler := newControlHandler(proxy, store)
+
+	body := bytes.NewBufferString(`{"denied":["new.example"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/policy", body)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+
+	filter := proxy.effectiveFilter()
+	if got := filter.Check("new.example"); got != FilterResultAllowed {
+		t.Fatalf("Check(new.example) = %s, want allowed", got)
+	}
+	if got := filter.Check("old.example"); got != FilterResultBlocked {
+		t.Fatalf("Check(old.example) = %s, want blocked", got)
 	}
 }
