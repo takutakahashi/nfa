@@ -2,32 +2,47 @@ package networkfilter
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
-
-// SidecarUID is the UID the nfa sidecar runs as.
-// iptables OUTPUT rules exempt this UID so the sidecar can reach real upstreams.
-const SidecarUID = 0
 
 type tableRule struct {
 	table string
 	args  []string
 }
 
-func iptablesRules() []tableRule {
+// CurrentUID returns the UID that should be exempted by default.
+func CurrentUID() int {
+	return os.Getuid()
+}
+
+// ParseUID validates a UID string.
+func ParseUID(value string) (int, error) {
+	uid, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("parse uid %q: %w", value, err)
+	}
+	if uid < 0 {
+		return 0, fmt.Errorf("uid must be non-negative: %d", uid)
+	}
+	return uid, nil
+}
+
+func iptablesRules(sidecarUID int) []tableRule {
 	proxyPort := fmt.Sprintf("%d", ProxyPort)
-	sidecarUID := fmt.Sprintf("%d", SidecarUID)
+	sidecarUIDString := fmt.Sprintf("%d", sidecarUID)
 
 	return []tableRule{
 		{"filter", []string{"-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT"}},
-		{"filter", []string{"-A", "OUTPUT", "-m", "owner", "--uid-owner", sidecarUID, "-j", "ACCEPT"}},
+		{"filter", []string{"-A", "OUTPUT", "-m", "owner", "--uid-owner", sidecarUIDString, "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.1", "--dport", proxyPort, "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-p", "tcp", "-j", "REJECT", "--reject-with", "tcp-reset"}},
 
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.1", "-j", "RETURN"}},
-		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "-m", "owner", "--uid-owner", sidecarUID, "-j", "RETURN"}},
+		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "-m", "owner", "--uid-owner", sidecarUIDString, "-j", "RETURN"}},
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-port", proxyPort}},
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "--dport", "443", "-j", "REDIRECT", "--to-port", proxyPort}},
 	}
@@ -35,14 +50,19 @@ func iptablesRules() []tableRule {
 
 // SetupIPTables configures iptables rules for network isolation:
 //   - All outbound TCP is rejected by default.
-//   - Traffic from the sidecar (UID 0) is exempted.
+//   - Traffic from the sidecar UID is exempted.
 //   - The proxy port (127.0.0.1:3128) is allowed for the main container.
 //   - Established/related packets pass through.
 //   - Port 80/443 is transparently redirected to the proxy port.
 //
 // Requires CAP_NET_ADMIN.
 func SetupIPTables() error {
-	for _, rule := range iptablesRules() {
+	return SetupIPTablesForUID(CurrentUID())
+}
+
+// SetupIPTablesForUID configures iptables rules and exempts sidecarUID.
+func SetupIPTablesForUID(sidecarUID int) error {
+	for _, rule := range iptablesRules(sidecarUID) {
 		args := append([]string{"-t", rule.table}, rule.args...)
 		cmd := exec.Command("iptables", args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -56,6 +76,11 @@ func SetupIPTables() error {
 // format representing the same rules that SetupIPTables would apply.
 // Pipe the output to iptables-restore or write it to a file for later use.
 func GenerateIPTablesRestore() string {
+	return GenerateIPTablesRestoreForUID(CurrentUID())
+}
+
+// GenerateIPTablesRestoreForUID returns iptables-restore rules exempting sidecarUID.
+func GenerateIPTablesRestoreForUID(sidecarUID int) string {
 	// Collect rules grouped by table, preserving insertion order per table.
 	type tableBlock struct {
 		name  string
@@ -64,7 +89,7 @@ func GenerateIPTablesRestore() string {
 	tableIndex := map[string]int{}
 	var blocks []tableBlock
 
-	for _, r := range iptablesRules() {
+	for _, r := range iptablesRules(sidecarUID) {
 		idx, ok := tableIndex[r.table]
 		if !ok {
 			idx = len(blocks)

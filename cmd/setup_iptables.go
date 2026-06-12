@@ -20,21 +20,25 @@ Both flags can be combined in a single invocation.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		apply, _ := cmd.Flags().GetBool("apply")
 		output, _ := cmd.Flags().GetString("output")
+		sidecarUID, err := sidecarUIDFromFlags(cmd)
+		if err != nil {
+			return err
+		}
 
 		if !apply && output == "" {
 			return fmt.Errorf("specify at least one of --apply or --output")
 		}
 
 		if apply {
-			log.Println("[nfa] applying iptables rules...")
-			if err := networkfilter.SetupIPTables(); err != nil {
+			log.Printf("[nfa] applying iptables rules (sidecar uid: %d)...", sidecarUID)
+			if err := networkfilter.SetupIPTablesForUID(sidecarUID); err != nil {
 				return fmt.Errorf("iptables setup failed: %w", err)
 			}
 			log.Println("[nfa] iptables rules applied successfully")
 		}
 
 		if output != "" {
-			content := networkfilter.GenerateIPTablesRestore()
+			content := networkfilter.GenerateIPTablesRestoreForUID(sidecarUID)
 			if output == "-" {
 				fmt.Print(content)
 				return nil
@@ -52,4 +56,5 @@ Both flags can be combined in a single invocation.`,
 func init() {
 	setupIptablesCmd.Flags().Bool("apply", false, "Apply iptables rules directly (requires CAP_NET_ADMIN)")
 	setupIptablesCmd.Flags().String("output", "", `Write iptables-restore compatible rules to this file path ("-" for stdout)`)
+	setupIptablesCmd.Flags().String("sidecar-uid", "", "UID to exempt for the nfa sidecar. Defaults to current UID. Also via NETWORK_FILTER_SIDECAR_UID.")
 }
