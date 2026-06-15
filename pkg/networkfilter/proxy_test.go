@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 )
@@ -163,6 +164,66 @@ func TestProxyHTTPUsesUpstreamProxy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadResponse: %v", err)
 	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	select {
+	case req := <-gotReq:
+		if req.URL.String() != "http://example.com/resource?q=1" {
+			t.Fatalf("parent proxy URL = %q, want absolute-form URL", req.URL.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("parent proxy did not receive HTTP request")
+	}
+}
+
+func TestProxyRunHTTPUsesUpstreamProxyOverTCP(t *testing.T) {
+	parent, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen parent: %v", err)
+	}
+	defer parent.Close()
+
+	gotReq := make(chan *http.Request, 1)
+	go func() {
+		conn, err := parent.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		req, err := http.ReadRequest(bufio.NewReader(conn))
+		if err == nil {
+			gotReq <- req
+		}
+		_, _ = fmt.Fprint(conn, "HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nparent-ok")
+	}()
+
+	proxy := NewProxy(NewAllowlistFilter([]string{"example.com"}), true)
+	if err := proxy.SetUpstreamProxy("http://" + parent.Addr().String()); err != nil {
+		t.Fatalf("SetUpstreamProxy: %v", err)
+	}
+
+	proxyLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen proxy: %v", err)
+	}
+	defer proxyLis.Close()
+	go func() {
+		_ = proxy.Run(proxyLis)
+	}()
+
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(&url.URL{Scheme: "http", Host: proxyLis.Addr().String()}),
+		},
+	}
+	resp, err := client.Get("http://example.com/resource?q=1")
+	if err != nil {
+		t.Fatalf("Get through proxy: %v", err)
+	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
