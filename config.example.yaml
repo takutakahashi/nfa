@@ -43,6 +43,13 @@ filter:
 # NETWORK_FILTER_CONTROL_SOCKET.
 # controlSocket: "/tmp/nfa-control.sock"
 
+# upstreamProxy: optional parent HTTP proxy URL. When set, allowed outbound
+# HTTP, HTTPS CONNECT, and transparent TLS traffic is forwarded through this
+# proxy after nfa policy evaluation. Can also be set via --upstream-proxy or
+# NETWORK_FILTER_UPSTREAM_PROXY. Basic auth in the URL is supported.
+# upstreamProxy: "http://proxy.example:8080"
+# upstreamProxy: "http://user:password@proxy.example:8080"
+
 # deferredPolicy: when true, the proxy starts in passthrough mode (all traffic
 # allowed) and the policy is activated only after:
 #   curl -X POST http://localhost:3129/enable-policy

@@ -2,11 +2,13 @@ package networkfilter
 
 import (
 	"bufio"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -71,6 +73,7 @@ type Proxy struct {
 	activeFilter     atomic.Pointer[Filter]
 	policyActive     atomic.Bool
 	log              domainLog
+	upstreamProxy    *url.URL
 }
 
 // NewProxy creates a Proxy with the given filter.
@@ -84,6 +87,29 @@ func NewProxy(filter *Filter, active bool) *Proxy {
 		p.policyActive.Store(true)
 	}
 	return p
+}
+
+// SetUpstreamProxy configures an optional parent HTTP proxy. When configured,
+// allowed outbound traffic is forwarded through the parent proxy instead of
+// dialing the destination directly.
+func (p *Proxy) SetUpstreamProxy(rawURL string) error {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		p.upstreamProxy = nil
+		return nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("parse upstream proxy %q: %w", rawURL, err)
+	}
+	if u.Scheme != "http" {
+		return fmt.Errorf("upstream proxy %q: only http scheme is supported", rawURL)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("upstream proxy %q: missing host", rawURL)
+	}
+	p.upstreamProxy = u
+	return nil
 }
 
 // EnablePolicy activates the configured filter.
@@ -169,7 +195,7 @@ func (p *Proxy) handleCONNECT(conn net.Conn, req *http.Request) {
 		return
 	}
 
-	upConn, err := net.DialTimeout("tcp", req.Host, dialTimeout)
+	upConn, err := p.dialTunnel(req.Host)
 	if err != nil {
 		log.Printf("[nfa] CONNECT dial error %s: %v", req.Host, err)
 		_, _ = fmt.Fprintf(conn, "HTTP/1.1 502 Bad Gateway\r\n\r\n%v\n", err)
@@ -214,11 +240,12 @@ func (p *Proxy) handleHTTP(conn net.Conn, br *bufio.Reader, req *http.Request) {
 	if upstream == "" {
 		upstream = req.URL.Host
 	}
+	targetHost := upstream
 	if !strings.Contains(upstream, ":") {
 		upstream = net.JoinHostPort(upstream, "80")
 	}
 
-	upConn, err := net.DialTimeout("tcp", upstream, dialTimeout)
+	upConn, err := p.dialHTTP(upstream, targetHost, req)
 	if err != nil {
 		log.Printf("[nfa] HTTP dial error %s: %v", upstream, err)
 		resp := &http.Response{
@@ -234,9 +261,11 @@ func (p *Proxy) handleHTTP(conn net.Conn, br *bufio.Reader, req *http.Request) {
 	}
 	defer upConn.Close() //nolint:errcheck
 
-	req.RequestURI = req.URL.RequestURI()
-	if err := req.Write(upConn); err != nil {
-		return
+	if p.upstreamProxy == nil {
+		req.RequestURI = req.URL.RequestURI()
+		if err := req.Write(upConn); err != nil {
+			return
+		}
 	}
 	pipe(conn, upConn)
 }
@@ -262,7 +291,7 @@ func (p *Proxy) handleTransparentTLS(conn net.Conn, br *bufio.Reader) {
 	}
 
 	upstream := net.JoinHostPort(sni, "443")
-	upConn, err := net.DialTimeout("tcp", upstream, dialTimeout)
+	upConn, err := p.dialTunnel(upstream)
 	if err != nil {
 		log.Printf("[nfa] TLS dial error %s: %v", upstream, err)
 		return
@@ -273,6 +302,97 @@ func (p *Proxy) handleTransparentTLS(conn net.Conn, br *bufio.Reader) {
 		return
 	}
 	pipe(io.MultiReader(br, conn), upConn, conn)
+}
+
+func (p *Proxy) dialHTTP(upstream, targetHost string, req *http.Request) (net.Conn, error) {
+	if p.upstreamProxy == nil {
+		return net.DialTimeout("tcp", upstream, dialTimeout)
+	}
+
+	upConn, err := net.DialTimeout("tcp", p.upstreamProxyAddress(), dialTimeout)
+	if err != nil {
+		return nil, err
+	}
+
+	if req.URL.Scheme == "" {
+		req.URL.Scheme = "http"
+	}
+	if req.URL.Host == "" {
+		req.URL.Host = targetHost
+	}
+	req.RequestURI = ""
+	p.setProxyAuthorization(req)
+	if err := req.WriteProxy(upConn); err != nil {
+		_ = upConn.Close()
+		return nil, err
+	}
+	return upConn, nil
+}
+
+func (p *Proxy) dialTunnel(target string) (net.Conn, error) {
+	if p.upstreamProxy == nil {
+		return net.DialTimeout("tcp", target, dialTimeout)
+	}
+
+	upConn, err := net.DialTimeout("tcp", p.upstreamProxyAddress(), dialTimeout)
+	if err != nil {
+		return nil, err
+	}
+
+	req := &http.Request{
+		Method: http.MethodConnect,
+		URL:    &url.URL{Opaque: target},
+		Host:   target,
+		Header: make(http.Header),
+	}
+	p.setProxyAuthorization(req)
+	if err := req.Write(upConn); err != nil {
+		_ = upConn.Close()
+		return nil, err
+	}
+
+	br := bufio.NewReader(upConn)
+	resp, err := http.ReadResponse(br, req)
+	if err != nil {
+		_ = upConn.Close()
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_ = resp.Body.Close()
+		_ = upConn.Close()
+		return nil, fmt.Errorf("upstream proxy CONNECT %s returned %s", target, resp.Status)
+	}
+	return &bufferedConn{Conn: upConn, reader: br}, nil
+}
+
+func (p *Proxy) setProxyAuthorization(req *http.Request) {
+	if p.upstreamProxy == nil {
+		return
+	}
+	if p.upstreamProxy.User == nil {
+		req.Header.Del("Proxy-Authorization")
+		return
+	}
+	password, _ := p.upstreamProxy.User.Password()
+	credential := p.upstreamProxy.User.Username() + ":" + password
+	req.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(credential)))
+}
+
+func (p *Proxy) upstreamProxyAddress() string {
+	port := p.upstreamProxy.Port()
+	if port == "" {
+		port = "80"
+	}
+	return net.JoinHostPort(p.upstreamProxy.Hostname(), port)
+}
+
+type bufferedConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *bufferedConn) Read(b []byte) (int, error) {
+	return c.reader.Read(b)
 }
 
 func pipe(a, b interface{ Read([]byte) (int, error) }, extras ...io.Writer) {

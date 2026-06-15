@@ -14,6 +14,7 @@ type Config struct {
 	Filter         FilterConfig `yaml:"filter"`
 	DeferredPolicy bool         `yaml:"deferredPolicy"`
 	ControlSocket  string       `yaml:"controlSocket"`
+	UpstreamProxy  string       `yaml:"upstreamProxy"`
 }
 
 // FilterConfig defines the domain filter policy.
