@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 
@@ -37,6 +38,7 @@ Env vars:
   NETWORK_FILTER_ALLOWED_DOMAINS  comma-separated allowed domains (sets allowlist mode)
   NETWORK_FILTER_DENIED_DOMAINS   comma-separated denied domains  (sets denylist mode)
   NETWORK_FILTER_CONTROL_SOCKET   Unix domain socket path for the control API
+  NETWORK_FILTER_UPSTREAM_PROXY   parent HTTP proxy URL for allowed outbound traffic
 
 A single listener on port 3128 handles:
   - HTTP CONNECT tunnels  (proxy-aware HTTPS via HTTP_PROXY/HTTPS_PROXY)
@@ -65,6 +67,8 @@ func init() {
 		"Log would-be-blocked domains but do not reject traffic. Also via NETWORK_FILTER_COUNT_MODE.")
 	proxyCmd.Flags().String("control-socket", "",
 		"Unix domain socket path for the control API. Also via NETWORK_FILTER_CONTROL_SOCKET. When set, port 3129 is not used.")
+	proxyCmd.Flags().String("upstream-proxy", "",
+		"Parent HTTP proxy URL for allowed outbound traffic. Also via NETWORK_FILTER_UPSTREAM_PROXY.")
 	proxyCmd.Flags().String("policy-store-file", "",
 		"Path to YAML config file where POST /policy persists policy. Defaults to --config when set.")
 	proxyCmd.Flags().Bool("with-setup", false,
@@ -98,6 +102,7 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	deferredFlag, _ := cmd.Flags().GetBool("deferred-policy")
 	countModeFlag, _ := cmd.Flags().GetBool("count-mode")
 	controlSocketFlag, _ := cmd.Flags().GetString("control-socket")
+	upstreamProxyFlag, _ := cmd.Flags().GetString("upstream-proxy")
 	policyStoreFile, _ := cmd.Flags().GetString("policy-store-file")
 	withSetup, _ := cmd.Flags().GetBool("with-setup")
 
@@ -108,6 +113,10 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	controlSocket := strings.TrimSpace(os.Getenv("NETWORK_FILTER_CONTROL_SOCKET"))
 	if controlSocketFlag != "" {
 		controlSocket = strings.TrimSpace(controlSocketFlag)
+	}
+	upstreamProxyURL := strings.TrimSpace(os.Getenv("NETWORK_FILTER_UPSTREAM_PROXY"))
+	if upstreamProxyFlag != "" {
+		upstreamProxyURL = strings.TrimSpace(upstreamProxyFlag)
 	}
 
 	// Merge config file values when no CLI/env override was given.
@@ -127,6 +136,9 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 		}
 		if controlSocket == "" {
 			controlSocket = strings.TrimSpace(cfg.ControlSocket)
+		}
+		if upstreamProxyURL == "" {
+			upstreamProxyURL = strings.TrimSpace(cfg.UpstreamProxy)
 		}
 	}
 
@@ -175,6 +187,12 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	}
 
 	proxy := networkfilter.NewProxy(filter, !deferredPolicy)
+	if upstreamProxyURL != "" {
+		if err := proxy.SetUpstreamProxy(upstreamProxyURL); err != nil {
+			return err
+		}
+		log.Printf("[nfa] upstream proxy: %s", redactedURL(upstreamProxyURL))
+	}
 	if policyStoreFile == "" {
 		policyStoreFile = cfgPath
 	}
@@ -254,4 +272,13 @@ func controlEndpoint(socketPath string) string {
 		return fmt.Sprintf("unix socket %s", socketPath)
 	}
 	return fmt.Sprintf("port %d", networkfilter.ControlPort)
+}
+
+func redactedURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.User == nil {
+		return rawURL
+	}
+	u.User = url.UserPassword(u.User.Username(), "xxxxx")
+	return u.String()
 }

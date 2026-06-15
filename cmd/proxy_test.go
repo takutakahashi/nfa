@@ -46,6 +46,21 @@ func TestProxyCommandHasWithSetupFlag(t *testing.T) {
 	}
 }
 
+func TestProxyCommandHasUpstreamProxyFlag(t *testing.T) {
+	flag := proxyCmd.Flags().Lookup("upstream-proxy")
+	if flag == nil {
+		t.Fatal("proxy --upstream-proxy flag is not registered")
+	}
+}
+
+func TestRedactedURLHidesPassword(t *testing.T) {
+	got := redactedURL("http://user:secret@proxy.example:8080")
+	want := "http://user:xxxxx@proxy.example:8080"
+	if got != want {
+		t.Fatalf("redactedURL() = %q, want %q", got, want)
+	}
+}
+
 func TestMaybeSetupIPTablesSkipsWhenDisabled(t *testing.T) {
 	oldSetup := setupIPTables
 	defer func() { setupIPTables = oldSetup }()

@@ -90,6 +90,30 @@ func TestFilePolicyStoreSavePreservesControlSocket(t *testing.T) {
 	}
 }
 
+func TestFilePolicyStoreSavePreservesUpstreamProxy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nfa.yaml")
+	initial := []byte("filter:\n  mode: allowlist\n  domains:\n    - old.example\nupstreamProxy: http://proxy.example:8080\n")
+	if err := os.WriteFile(path, initial, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	store := NewFilePolicyStore(path)
+	if err := store.Save(policy.Policy{Denied: []string{"bad.example"}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.UpstreamProxy != "http://proxy.example:8080" {
+		t.Fatalf("upstreamProxy = %q, want http://proxy.example:8080", cfg.UpstreamProxy)
+	}
+	if cfg.Filter.Mode != "denylist" {
+		t.Fatalf("mode = %q, want denylist", cfg.Filter.Mode)
+	}
+}
+
 func TestFilePolicyStoreSaveReadOnlyFileReturnsError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nfa.yaml")
 	initial := []byte("filter:\n  mode: allowlist\n  domains:\n    - old.example\n")
