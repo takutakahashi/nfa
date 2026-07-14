@@ -43,3 +43,22 @@ func TestDirectAllowlistCIDRs(t *testing.T) {
 		t.Fatalf("DirectAllowlistCIDRs() = %v, want %v", got, want)
 	}
 }
+
+func TestGenerateIPTablesRestoreWithDirectAllowlist(t *testing.T) {
+	restore := GenerateIPTablesRestoreWithDirectAllowlist([]string{
+		"example.com", "192.0.2.10", "198.51.100.17/24", "192.0.2.10",
+	})
+	for _, want := range []string{
+		"-A NFA_DIRECT_ALLOW -p tcp -d 192.0.2.10/32 -j ACCEPT",
+		"-A NFA_DIRECT_ALLOW -p tcp -d 192.0.2.10/32 -j RETURN",
+		"-A NFA_DIRECT_ALLOW -p tcp -d 198.51.100.0/24 -j ACCEPT",
+		"-A NFA_DIRECT_ALLOW -p tcp -d 198.51.100.0/24 -j RETURN",
+	} {
+		if !strings.Contains(restore, want) {
+			t.Errorf("restore rules missing %q:\n%s", want, restore)
+		}
+	}
+	if strings.Contains(restore, "example.com") {
+		t.Errorf("restore rules contain hostname entry:\n%s", restore)
+	}
+}

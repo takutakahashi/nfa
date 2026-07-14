@@ -52,11 +52,25 @@ func iptablesRules() []tableRule {
 //
 // Requires CAP_NET_ADMIN.
 func SetupIPTables() error {
+	return SetupIPTablesWithDirectAllowlist(nil)
+}
+
+// SetupIPTablesWithDirectAllowlist configures the base isolation rules and
+// adds direct TCP bypasses for IPv4 addresses and CIDRs in entries.
+func SetupIPTablesWithDirectAllowlist(entries []string) error {
 	for _, rule := range iptablesRules() {
 		args := append([]string{"-t", rule.table}, rule.args...)
 		cmd := exec.Command("iptables", args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("iptables -t %s %v: %w\noutput: %s", rule.table, rule.args, err, out)
+		}
+	}
+	for _, cidr := range DirectAllowlistCIDRs(entries) {
+		if err := runIPTables("filter", "-A", directAllowFilterChain, "-p", "tcp", "-d", cidr, "-j", "ACCEPT"); err != nil {
+			return err
+		}
+		if err := runIPTables("nat", "-A", directAllowNATChain, "-p", "tcp", "-d", cidr, "-j", "RETURN"); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -182,6 +196,12 @@ func directAllowlistCIDR(entry string) (string, bool) {
 // format representing the same rules that SetupIPTables would apply.
 // Pipe the output to iptables-restore or write it to a file for later use.
 func GenerateIPTablesRestore() string {
+	return GenerateIPTablesRestoreWithDirectAllowlist(nil)
+}
+
+// GenerateIPTablesRestoreWithDirectAllowlist returns the base restore rules
+// plus direct TCP bypasses for IPv4 addresses and CIDRs in entries.
+func GenerateIPTablesRestoreWithDirectAllowlist(entries []string) string {
 	// Collect rules grouped by table, preserving insertion order per table.
 	type tableBlock struct {
 		name  string
@@ -198,6 +218,14 @@ func GenerateIPTablesRestore() string {
 			blocks = append(blocks, tableBlock{name: r.table})
 		}
 		blocks[idx].rules = append(blocks[idx].rules, strings.Join(r.args, " "))
+	}
+	for _, cidr := range DirectAllowlistCIDRs(entries) {
+		filterIdx := tableIndex["filter"]
+		blocks[filterIdx].rules = append(blocks[filterIdx].rules,
+			strings.Join([]string{"-A", directAllowFilterChain, "-p", "tcp", "-d", cidr, "-j", "ACCEPT"}, " "))
+		natIdx := tableIndex["nat"]
+		blocks[natIdx].rules = append(blocks[natIdx].rules,
+			strings.Join([]string{"-A", directAllowNATChain, "-p", "tcp", "-d", cidr, "-j", "RETURN"}, " "))
 	}
 
 	var sb strings.Builder
