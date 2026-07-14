@@ -16,6 +16,16 @@ To apply the iptables setup and start the proxy in one command, use:
 nfa proxy --with-setup --config config.yaml
 ```
 
+To apply or generate the iptables rules separately, pass the same config file:
+
+```sh
+nfa setup-iptables --apply --config config.yaml
+nfa setup-iptables --output rules.v4 --config config.yaml
+```
+
+IPv4 addresses and CIDR ranges in an allowlist are added as direct TCP allows.
+Domain entries continue to be enforced by the proxy.
+
 or:
 
 ```sh
