@@ -24,7 +24,9 @@ nfa setup-iptables --output rules.v4 --config config.yaml
 ```
 
 IPv4 addresses and CIDR ranges in an allowlist are added as direct TCP allows.
-Domain entries continue to be enforced by the proxy.
+They bypass the transparent proxy entirely, so TLS traffic to those ranges is
+not inspected or judged by SNI. Domain entries continue to be enforced by the
+proxy.
 
 or:
 
