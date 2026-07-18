@@ -56,7 +56,9 @@ func SetupIPTables() error {
 }
 
 // SetupIPTablesWithDirectAllowlist configures the base isolation rules and
-// adds direct TCP bypasses for IPv4 addresses and CIDRs in entries.
+// adds direct TCP bypasses for IPv4 addresses and CIDRs in entries. The NAT
+// bypass happens before the HTTP/TLS redirects, so allowlisted destinations
+// never reach the proxy and are not subject to SNI inspection.
 func SetupIPTablesWithDirectAllowlist(entries []string) error {
 	for _, rule := range iptablesRules() {
 		args := append([]string{"-t", rule.table}, rule.args...)
@@ -77,8 +79,9 @@ func SetupIPTablesWithDirectAllowlist(entries []string) error {
 }
 
 // UpdateDirectAllowlist configures direct TCP destinations that bypass the
-// transparent HTTP/TLS redirects and the default TCP reject rule. Only IPv4
-// addresses and CIDRs are applied; hostnames remain proxy-only policy entries.
+// transparent HTTP/TLS redirects (and therefore SNI inspection) and the
+// default TCP reject rule. Only IPv4 addresses and CIDRs are applied;
+// hostnames remain proxy-only policy entries.
 func UpdateDirectAllowlist(entries []string) error {
 	cidrs := DirectAllowlistCIDRs(entries)
 	if err := ensureDirectAllowlistChains(); err != nil {
@@ -200,7 +203,8 @@ func GenerateIPTablesRestore() string {
 }
 
 // GenerateIPTablesRestoreWithDirectAllowlist returns the base restore rules
-// plus direct TCP bypasses for IPv4 addresses and CIDRs in entries.
+// plus direct TCP bypasses for IPv4 addresses and CIDRs in entries. The NAT
+// rules return before the TLS redirect, preventing SNI inspection.
 func GenerateIPTablesRestoreWithDirectAllowlist(entries []string) string {
 	// Collect rules grouped by table, preserving insertion order per table.
 	type tableBlock struct {

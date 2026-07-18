@@ -62,3 +62,17 @@ func TestGenerateIPTablesRestoreWithDirectAllowlist(t *testing.T) {
 		t.Errorf("restore rules contain hostname entry:\n%s", restore)
 	}
 }
+
+func TestAllowlistedIPRangesBypassTLSRedirectAndSNIInspection(t *testing.T) {
+	restore := GenerateIPTablesRestoreWithDirectAllowlist([]string{"198.51.100.0/24"})
+
+	jump := strings.Index(restore, "-A OUTPUT -p tcp -j NFA_DIRECT_ALLOW")
+	bypass := strings.Index(restore, "-A NFA_DIRECT_ALLOW -p tcp -d 198.51.100.0/24 -j RETURN")
+	tlsRedirect := strings.Index(restore, "-A OUTPUT -p tcp --dport 443 -j REDIRECT --to-port 3128")
+	if jump == -1 || bypass == -1 || tlsRedirect == -1 {
+		t.Fatalf("restore rules do not contain the direct bypass and TLS redirect:\n%s", restore)
+	}
+	if jump > tlsRedirect {
+		t.Fatalf("direct allowlist jump must run before the TLS redirect:\n%s", restore)
+	}
+}
