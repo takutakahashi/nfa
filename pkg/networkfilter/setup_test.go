@@ -19,7 +19,9 @@ func TestGenerateIPTablesRestoreIncludesDirectAllowlistChains(t *testing.T) {
 	restore := GenerateIPTablesRestore()
 	for _, want := range []string{
 		"-N NFA_DIRECT_ALLOW",
+		"-N NFA_RUNTIME_ALLOW",
 		"-A OUTPUT -p tcp -j NFA_DIRECT_ALLOW",
+		"-A OUTPUT -p tcp -j NFA_RUNTIME_ALLOW",
 		"-A OUTPUT -p tcp --dport 80 -j REDIRECT --to-port 3128",
 	} {
 		if !strings.Contains(restore, want) {
@@ -61,6 +63,9 @@ func TestGenerateIPTablesRestoreWithDirectAllowlist(t *testing.T) {
 	if strings.Contains(restore, "example.com") {
 		t.Errorf("restore rules contain hostname entry:\n%s", restore)
 	}
+	if strings.Contains(restore, "-A NFA_RUNTIME_ALLOW -p tcp -d") {
+		t.Errorf("static allowlist entries leaked into the runtime chain:\n%s", restore)
+	}
 }
 
 func TestAllowlistedIPRangesBypassTLSRedirectAndSNIInspection(t *testing.T) {
@@ -74,5 +79,14 @@ func TestAllowlistedIPRangesBypassTLSRedirectAndSNIInspection(t *testing.T) {
 	}
 	if jump > tlsRedirect {
 		t.Fatalf("direct allowlist jump must run before the TLS redirect:\n%s", restore)
+	}
+}
+
+func TestRuntimeDirectAllowlistUsesSeparateChains(t *testing.T) {
+	if directAllowFilterChain == runtimeDirectFilterChain {
+		t.Fatal("runtime filter updates would flush the static direct allowlist")
+	}
+	if directAllowNATChain == runtimeDirectNATChain {
+		t.Fatal("runtime NAT updates would flush the static direct allowlist")
 	}
 }
