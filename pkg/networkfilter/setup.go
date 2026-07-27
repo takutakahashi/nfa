@@ -12,8 +12,10 @@ import (
 const SidecarUID = 0
 
 const (
-	directAllowFilterChain = "NFA_DIRECT_ALLOW"
-	directAllowNATChain    = "NFA_DIRECT_ALLOW"
+	directAllowFilterChain   = "NFA_DIRECT_ALLOW"
+	directAllowNATChain      = "NFA_DIRECT_ALLOW"
+	runtimeDirectFilterChain = "NFA_RUNTIME_ALLOW"
+	runtimeDirectNATChain    = "NFA_RUNTIME_ALLOW"
 )
 
 type tableRule struct {
@@ -27,17 +29,21 @@ func iptablesRules() []tableRule {
 
 	return []tableRule{
 		{"filter", []string{"-N", directAllowFilterChain}},
+		{"filter", []string{"-N", runtimeDirectFilterChain}},
 		{"filter", []string{"-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-m", "owner", "--uid-owner", sidecarUID, "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.1", "--dport", proxyPort, "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-p", "tcp", "-j", directAllowFilterChain}},
+		{"filter", []string{"-A", "OUTPUT", "-p", "tcp", "-j", runtimeDirectFilterChain}},
 		{"filter", []string{"-A", "OUTPUT", "-p", "tcp", "-j", "REJECT", "--reject-with", "tcp-reset"}},
 
 		{"nat", []string{"-N", directAllowNATChain}},
+		{"nat", []string{"-N", runtimeDirectNATChain}},
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.1", "-j", "RETURN"}},
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "-m", "owner", "--uid-owner", sidecarUID, "-j", "RETURN"}},
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "-j", directAllowNATChain}},
+		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "-j", runtimeDirectNATChain}},
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-port", proxyPort}},
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "--dport", "443", "-j", "REDIRECT", "--to-port", proxyPort}},
 	}
@@ -78,26 +84,28 @@ func SetupIPTablesWithDirectAllowlist(entries []string) error {
 	return nil
 }
 
-// UpdateDirectAllowlist configures direct TCP destinations that bypass the
-// transparent HTTP/TLS redirects (and therefore SNI inspection) and the
-// default TCP reject rule. Only IPv4 addresses and CIDRs are applied;
-// hostnames remain proxy-only policy entries.
+// UpdateDirectAllowlist configures runtime direct TCP destinations that bypass
+// the transparent HTTP/TLS redirects (and therefore SNI inspection) and the
+// default TCP reject rule. The static direct allowlist installed during
+// iptables setup is kept in separate chains and is never flushed here. Only
+// IPv4 addresses and CIDRs are applied; hostnames remain proxy-only policy
+// entries.
 func UpdateDirectAllowlist(entries []string) error {
 	cidrs := DirectAllowlistCIDRs(entries)
 	if err := ensureDirectAllowlistChains(); err != nil {
 		return err
 	}
-	if err := flushChain("filter", directAllowFilterChain); err != nil {
+	if err := flushChain("filter", runtimeDirectFilterChain); err != nil {
 		return err
 	}
-	if err := flushChain("nat", directAllowNATChain); err != nil {
+	if err := flushChain("nat", runtimeDirectNATChain); err != nil {
 		return err
 	}
 	for _, cidr := range cidrs {
-		if err := runIPTables("filter", "-A", directAllowFilterChain, "-p", "tcp", "-d", cidr, "-j", "ACCEPT"); err != nil {
+		if err := runIPTables("filter", "-A", runtimeDirectFilterChain, "-p", "tcp", "-d", cidr, "-j", "ACCEPT"); err != nil {
 			return err
 		}
-		if err := runIPTables("nat", "-A", directAllowNATChain, "-p", "tcp", "-d", cidr, "-j", "RETURN"); err != nil {
+		if err := runIPTables("nat", "-A", runtimeDirectNATChain, "-p", "tcp", "-d", cidr, "-j", "RETURN"); err != nil {
 			return err
 		}
 	}
@@ -112,15 +120,17 @@ func (IPTablesDirectAllowlistUpdater) UpdateDirectAllowlist(entries []string) er
 }
 
 func ensureDirectAllowlistChains() error {
-	for _, table := range []string{"filter", "nat"} {
-		chain := directAllowFilterChain
-		if table == "nat" {
-			chain = directAllowNATChain
-		}
-		if err := runIPTablesAllowExists(table, "-N", chain); err != nil {
+	for _, target := range []struct {
+		table string
+		chain string
+	}{
+		{table: "filter", chain: runtimeDirectFilterChain},
+		{table: "nat", chain: runtimeDirectNATChain},
+	} {
+		if err := runIPTablesAllowExists(target.table, "-N", target.chain); err != nil {
 			return err
 		}
-		if err := ensureOutputJump(table, chain); err != nil {
+		if err := ensureOutputJump(target.table, target.chain); err != nil {
 			return err
 		}
 	}
