@@ -52,9 +52,7 @@ func TestGenerateIPTablesRestoreWithDirectAllowlist(t *testing.T) {
 	})
 	for _, want := range []string{
 		"-A NFA_DIRECT_ALLOW -p tcp -d 192.0.2.10/32 -j ACCEPT",
-		"-A NFA_DIRECT_ALLOW -p tcp -d 192.0.2.10/32 -j RETURN",
 		"-A NFA_DIRECT_ALLOW -p tcp -d 198.51.100.0/24 -j ACCEPT",
-		"-A NFA_DIRECT_ALLOW -p tcp -d 198.51.100.0/24 -j RETURN",
 	} {
 		if !strings.Contains(restore, want) {
 			t.Errorf("restore rules missing %q:\n%s", want, restore)
@@ -66,13 +64,17 @@ func TestGenerateIPTablesRestoreWithDirectAllowlist(t *testing.T) {
 	if strings.Contains(restore, "-A NFA_RUNTIME_ALLOW -p tcp -d") {
 		t.Errorf("static allowlist entries leaked into the runtime chain:\n%s", restore)
 	}
+	if strings.Contains(restore, "-A NFA_DIRECT_ALLOW -p tcp -d 192.0.2.10/32 -j RETURN") ||
+		strings.Contains(restore, "-A NFA_DIRECT_ALLOW -p tcp -d 198.51.100.0/24 -j RETURN") {
+		t.Errorf("NAT allowlist uses RETURN, which resumes OUTPUT traversal and reaches the proxy redirect:\n%s", restore)
+	}
 }
 
 func TestAllowlistedIPRangesBypassTLSRedirectAndSNIInspection(t *testing.T) {
 	restore := GenerateIPTablesRestoreWithDirectAllowlist([]string{"198.51.100.0/24"})
 
 	jump := strings.Index(restore, "-A OUTPUT -p tcp -j NFA_DIRECT_ALLOW")
-	bypass := strings.Index(restore, "-A NFA_DIRECT_ALLOW -p tcp -d 198.51.100.0/24 -j RETURN")
+	bypass := strings.Index(restore, "-A NFA_DIRECT_ALLOW -p tcp -d 198.51.100.0/24 -j ACCEPT")
 	tlsRedirect := strings.Index(restore, "-A OUTPUT -p tcp --dport 443 -j REDIRECT --to-port 3128")
 	if jump == -1 || bypass == -1 || tlsRedirect == -1 {
 		t.Fatalf("restore rules do not contain the direct bypass and TLS redirect:\n%s", restore)
@@ -88,5 +90,11 @@ func TestRuntimeDirectAllowlistUsesSeparateChains(t *testing.T) {
 	}
 	if directAllowNATChain == runtimeDirectNATChain {
 		t.Fatal("runtime NAT updates would flush the static direct allowlist")
+	}
+}
+
+func TestDirectAllowNATTargetTerminatesOutputTraversal(t *testing.T) {
+	if directAllowNATTarget != "ACCEPT" {
+		t.Fatalf("directAllowNATTarget = %q, want ACCEPT; RETURN resumes traversal before the proxy redirects", directAllowNATTarget)
 	}
 }
