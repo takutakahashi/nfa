@@ -16,6 +16,9 @@ const (
 	directAllowNATChain      = "NFA_DIRECT_ALLOW"
 	runtimeDirectFilterChain = "NFA_RUNTIME_ALLOW"
 	runtimeDirectNATChain    = "NFA_RUNTIME_ALLOW"
+	// ACCEPT terminates traversal of the nat OUTPUT chain. RETURN would only
+	// resume after the jump to the allowlist chain and still hit the redirects.
+	directAllowNATTarget = "ACCEPT"
 )
 
 type tableRule struct {
@@ -77,7 +80,7 @@ func SetupIPTablesWithDirectAllowlist(entries []string) error {
 		if err := runIPTables("filter", "-A", directAllowFilterChain, "-p", "tcp", "-d", cidr, "-j", "ACCEPT"); err != nil {
 			return err
 		}
-		if err := runIPTables("nat", "-A", directAllowNATChain, "-p", "tcp", "-d", cidr, "-j", "RETURN"); err != nil {
+		if err := runIPTables("nat", "-A", directAllowNATChain, "-p", "tcp", "-d", cidr, "-j", directAllowNATTarget); err != nil {
 			return err
 		}
 	}
@@ -105,7 +108,7 @@ func UpdateDirectAllowlist(entries []string) error {
 		if err := runIPTables("filter", "-A", runtimeDirectFilterChain, "-p", "tcp", "-d", cidr, "-j", "ACCEPT"); err != nil {
 			return err
 		}
-		if err := runIPTables("nat", "-A", runtimeDirectNATChain, "-p", "tcp", "-d", cidr, "-j", "RETURN"); err != nil {
+		if err := runIPTables("nat", "-A", runtimeDirectNATChain, "-p", "tcp", "-d", cidr, "-j", directAllowNATTarget); err != nil {
 			return err
 		}
 	}
@@ -239,7 +242,7 @@ func GenerateIPTablesRestoreWithDirectAllowlist(entries []string) string {
 			strings.Join([]string{"-A", directAllowFilterChain, "-p", "tcp", "-d", cidr, "-j", "ACCEPT"}, " "))
 		natIdx := tableIndex["nat"]
 		blocks[natIdx].rules = append(blocks[natIdx].rules,
-			strings.Join([]string{"-A", directAllowNATChain, "-p", "tcp", "-d", cidr, "-j", "RETURN"}, " "))
+			strings.Join([]string{"-A", directAllowNATChain, "-p", "tcp", "-d", cidr, "-j", directAllowNATTarget}, " "))
 	}
 
 	var sb strings.Builder
