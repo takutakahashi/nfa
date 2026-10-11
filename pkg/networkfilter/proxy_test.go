@@ -128,6 +128,61 @@ func TestProxyAllowsAllowlistedCIDRHTTPHost(t *testing.T) {
 	}
 }
 
+func TestProxyRoutesKeepAliveRequestsToEachRequestHost(t *testing.T) {
+	newUpstream := func(body string) *http.Server {
+		return &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, body)
+		})}
+	}
+
+	firstListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen first upstream: %v", err)
+	}
+	defer firstListener.Close()
+	firstServer := newUpstream("first")
+	defer firstServer.Close()
+	go func() { _ = firstServer.Serve(firstListener) }()
+
+	secondListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen second upstream: %v", err)
+	}
+	defer secondListener.Close()
+	secondServer := newUpstream("second")
+	defer secondServer.Close()
+	go func() { _ = secondServer.Serve(secondListener) }()
+
+	proxy := NewProxy(NewCountAllowlistFilter(nil), true)
+	client, server := net.Pipe()
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(2 * time.Second))
+	go proxy.handle(server)
+
+	reader := bufio.NewReader(client)
+	for i, tc := range []struct {
+		address string
+		body    string
+	}{
+		{address: firstListener.Addr().String(), body: "first"},
+		{address: secondListener.Addr().String(), body: "second"},
+	} {
+		_, _ = fmt.Fprintf(client, "GET http://%s/ HTTP/1.1\r\nHost: %s\r\n\r\n", tc.address, tc.address)
+		resp, err := http.ReadResponse(reader, nil)
+		if err != nil {
+			t.Fatalf("ReadResponse request %d: %v", i+1, err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("ReadAll request %d: %v", i+1, err)
+		}
+		if string(body) != tc.body {
+			t.Fatalf("request %d body = %q, want %q", i+1, body, tc.body)
+		}
+	}
+}
+
 func TestProxyHTTPUsesUpstreamProxy(t *testing.T) {
 	parent, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
