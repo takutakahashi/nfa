@@ -208,66 +208,84 @@ func (p *Proxy) handleCONNECT(conn net.Conn, req *http.Request) {
 }
 
 func (p *Proxy) handleHTTP(conn net.Conn, br *bufio.Reader, req *http.Request) {
-	host := req.Host
-	if host == "" {
-		host = req.URL.Host
-	}
+	transport := p.httpTransport()
+	defer transport.CloseIdleConnections()
 
-	f := p.effectiveFilter()
-	result := f.Check(host)
-	p.log.record(host, result)
-	if result == FilterResultBlocked && f.IsCountMode() {
-		log.Printf("[nfa] HTTP count-blocked (passed through): %s", host)
-	} else {
-		log.Printf("[nfa] HTTP %s: %s", result, host)
-	}
-
-	if result == FilterResultBlocked && !f.IsCountMode() {
-		resp := &http.Response{
-			Status:     "403 Forbidden",
-			StatusCode: http.StatusForbidden,
-			Proto:      "HTTP/1.1",
-			ProtoMajor: 1,
-			ProtoMinor: 1,
-			Header:     http.Header{"Content-Type": []string{"text/plain"}, "Connection": []string{"close"}},
-			Body:       io.NopCloser(strings.NewReader("blocked by network filter\n")),
+	for {
+		host := req.Host
+		if host == "" {
+			host = req.URL.Host
 		}
-		_ = resp.Write(conn)
-		return
-	}
 
-	upstream := req.Host
-	if upstream == "" {
-		upstream = req.URL.Host
-	}
-	targetHost := upstream
-	if !strings.Contains(upstream, ":") {
-		upstream = net.JoinHostPort(upstream, "80")
-	}
-
-	upConn, err := p.dialHTTP(upstream, targetHost, req)
-	if err != nil {
-		log.Printf("[nfa] HTTP dial error %s: %v", upstream, err)
-		resp := &http.Response{
-			Status:     "502 Bad Gateway",
-			StatusCode: http.StatusBadGateway,
-			Proto:      "HTTP/1.1",
-			ProtoMajor: 1,
-			ProtoMinor: 1,
-			Body:       io.NopCloser(strings.NewReader(fmt.Sprintf("dial error: %v\n", err))),
+		f := p.effectiveFilter()
+		result := f.Check(host)
+		p.log.record(host, result)
+		if result == FilterResultBlocked && f.IsCountMode() {
+			log.Printf("[nfa] HTTP count-blocked (passed through): %s", host)
+		} else {
+			log.Printf("[nfa] HTTP %s: %s", result, host)
 		}
-		_ = resp.Write(conn)
-		return
-	}
-	defer upConn.Close() //nolint:errcheck
 
-	if p.upstreamProxy == nil {
-		req.RequestURI = req.URL.RequestURI()
-		if err := req.Write(upConn); err != nil {
+		if result == FilterResultBlocked && !f.IsCountMode() {
+			resp := &http.Response{
+				Status:     "403 Forbidden",
+				StatusCode: http.StatusForbidden,
+				Proto:      "HTTP/1.1",
+				ProtoMajor: 1,
+				ProtoMinor: 1,
+				Header:     http.Header{"Content-Type": []string{"text/plain"}, "Connection": []string{"close"}},
+				Body:       io.NopCloser(strings.NewReader("blocked by network filter\n")),
+			}
+			_ = resp.Write(conn)
 			return
 		}
+
+		if req.URL.Scheme == "" {
+			req.URL.Scheme = "http"
+		}
+		// Route to the same authority that was checked by the policy. A proxy-form
+		// request normally repeats it in URL.Host, but do not trust a mismatched
+		// absolute URI to select a different upstream.
+		req.URL.Host = host
+		req.RequestURI = ""
+		req.Header.Del("Proxy-Connection")
+
+		resp, err := transport.RoundTrip(req)
+		if err != nil {
+			log.Printf("[nfa] HTTP round trip error %s: %v", host, err)
+			badGateway := &http.Response{
+				Status:     "502 Bad Gateway",
+				StatusCode: http.StatusBadGateway,
+				Proto:      "HTTP/1.1",
+				ProtoMajor: 1,
+				ProtoMinor: 1,
+				Header:     http.Header{"Connection": []string{"close"}},
+				Body:       io.NopCloser(strings.NewReader(fmt.Sprintf("round trip error: %v\n", err))),
+			}
+			_ = badGateway.Write(conn)
+			return
+		}
+
+		writeErr := resp.Write(conn)
+		_ = resp.Body.Close()
+		if writeErr != nil || req.Close || resp.Close {
+			return
+		}
+
+		next, err := http.ReadRequest(br)
+		if err != nil {
+			return
+		}
+		req = next
 	}
-	pipe(conn, upConn)
+}
+
+func (p *Proxy) httpTransport() *http.Transport {
+	return &http.Transport{
+		Proxy:               http.ProxyURL(p.upstreamProxy),
+		DialContext:         (&net.Dialer{Timeout: dialTimeout}).DialContext,
+		TLSHandshakeTimeout: dialTimeout,
+	}
 }
 
 func (p *Proxy) handleTransparentTLS(conn net.Conn, br *bufio.Reader) {
@@ -302,31 +320,6 @@ func (p *Proxy) handleTransparentTLS(conn net.Conn, br *bufio.Reader) {
 		return
 	}
 	pipe(io.MultiReader(br, conn), upConn, conn)
-}
-
-func (p *Proxy) dialHTTP(upstream, targetHost string, req *http.Request) (net.Conn, error) {
-	if p.upstreamProxy == nil {
-		return net.DialTimeout("tcp", upstream, dialTimeout)
-	}
-
-	upConn, err := net.DialTimeout("tcp", p.upstreamProxyAddress(), dialTimeout)
-	if err != nil {
-		return nil, err
-	}
-
-	if req.URL.Scheme == "" {
-		req.URL.Scheme = "http"
-	}
-	if req.URL.Host == "" {
-		req.URL.Host = targetHost
-	}
-	req.RequestURI = ""
-	p.setProxyAuthorization(req)
-	if err := req.WriteProxy(upConn); err != nil {
-		_ = upConn.Close()
-		return nil, err
-	}
-	return upConn, nil
 }
 
 func (p *Proxy) dialTunnel(target string) (net.Conn, error) {
