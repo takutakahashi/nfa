@@ -4,7 +4,7 @@ set -eu
 cleanup() {
   if [ -n "${NFA_PID:-}" ]; then kill "$NFA_PID" 2>/dev/null || true; fi
   if [ -n "${DNSMASQ_PID:-}" ]; then kill "$DNSMASQ_PID" 2>/dev/null || true; fi
-  ip netns del nfa-peer 2>/dev/null || true
+  ip link del nfa-dummy 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -17,18 +17,12 @@ fail() {
   exit 1
 }
 
-# A second namespace gives UDP and IPv6 real non-loopback destinations while
+# A dummy interface provides real non-loopback IPv4 and IPv6 routes while
 # keeping the GitHub runner and Docker daemon networking untouched.
-ip netns add nfa-peer
-ip link add nfa-veth type veth peer name peer-veth
-ip link set peer-veth netns nfa-peer
-ip addr add 192.0.2.1/24 dev nfa-veth
-ip -6 addr add 2001:db8:1::1/64 dev nfa-veth
-ip link set nfa-veth up
-ip netns exec nfa-peer ip link set lo up
-ip netns exec nfa-peer ip addr add 192.0.2.2/24 dev peer-veth
-ip netns exec nfa-peer ip -6 addr add 2001:db8:1::2/64 dev peer-veth
-ip netns exec nfa-peer ip link set peer-veth up
+ip link add nfa-dummy type dummy
+ip addr add 192.0.2.1/24 dev nfa-dummy
+ip -6 addr add 2001:db8:1::1/64 dev nfa-dummy
+ip link set nfa-dummy up
 
 dnsmasq \
   --keep-in-foreground \
