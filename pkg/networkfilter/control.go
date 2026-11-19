@@ -25,7 +25,10 @@ type ControlServer struct {
 	proxy                  *Proxy
 	store                  policy.Store
 	directAllowlistUpdater DirectAllowlistUpdater
+	dnsResolver            *DNSResolver
 }
+
+func (c *ControlServer) SetDNSResolver(resolver *DNSResolver) { c.dnsResolver = resolver }
 
 // NewControlServer creates a ControlServer that operates on the given proxy.
 func NewControlServer(proxy *Proxy, stores ...policy.Store) *ControlServer {
@@ -58,6 +61,9 @@ func (c *ControlServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /enable-policy", func(w http.ResponseWriter, _ *http.Request) {
 		c.proxy.EnablePolicy()
+		if c.dnsResolver != nil {
+			c.dnsResolver.EnablePolicy()
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, "policy enabled")
 	})
@@ -79,7 +85,11 @@ func (c *ControlServer) Handler() http.Handler {
 				return
 			}
 		}
-		c.proxy.SetPolicy(newFilterFromPolicy(pol))
+		filter := newFilterFromPolicy(pol)
+		c.proxy.SetPolicy(filter)
+		if c.dnsResolver != nil {
+			c.dnsResolver.SetPolicy(filter)
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, "policy configured")
 	})

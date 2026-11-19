@@ -5,6 +5,34 @@ import (
 	"testing"
 )
 
+func TestGeneratedRulesCaptureDNSAndRejectOtherUDP(t *testing.T) {
+	rules := GenerateIPTablesRestore()
+	for _, want := range []string{
+		"-A OUTPUT -p udp --dport 53 -j REDIRECT --to-port 5353",
+		"-A OUTPUT -p tcp --dport 53 -j REDIRECT --to-port 5353",
+		"-A OUTPUT -p udp -j REJECT --reject-with icmp-port-unreachable",
+	} {
+		if !strings.Contains(rules, want) {
+			t.Errorf("rules missing %q:\n%s", want, rules)
+		}
+	}
+	dnsRedirect := strings.Index(rules, "-A OUTPUT -p tcp --dport 53 -j REDIRECT")
+	loopbackReturn := strings.Index(rules, "-A OUTPUT -p tcp -d 127.0.0.1 -j RETURN")
+	if dnsRedirect < 0 || loopbackReturn < 0 || dnsRedirect > loopbackReturn {
+		t.Errorf("DNS redirect must precede loopback bypass:\n%s", rules)
+	}
+}
+
+func TestGeneratedIPv6RulesRejectOutboundTraffic(t *testing.T) {
+	rules := GenerateIP6TablesRestore()
+	if !strings.Contains(rules, "-A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited") {
+		t.Fatalf("IPv6 rules do not reject outbound traffic:\n%s", rules)
+	}
+	if strings.Contains(rules, "--uid-owner") {
+		t.Fatalf("IPv6 rules unexpectedly exempt an owner:\n%s", rules)
+	}
+}
+
 func TestGenerateIPTablesRestoreDoesNotBypassPrivateCIDRs(t *testing.T) {
 	restore := GenerateIPTablesRestore()
 	privateCIDRs := []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}

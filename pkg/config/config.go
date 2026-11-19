@@ -12,9 +12,21 @@ import (
 // Config is the top-level nfa configuration loaded from a YAML file.
 type Config struct {
 	Filter         FilterConfig `yaml:"filter"`
+	DNS            DNSConfig    `yaml:"dns"`
 	DeferredPolicy bool         `yaml:"deferredPolicy"`
 	ControlSocket  string       `yaml:"controlSocket"`
 	UpstreamProxy  string       `yaml:"upstreamProxy"`
+}
+
+// DNSConfig configures the policy-aware caching DNS forwarder.
+type DNSConfig struct {
+	Enabled     bool     `yaml:"enabled"`
+	Listen      string   `yaml:"listen"`
+	Upstreams   []string `yaml:"upstreams"`
+	MaxEntries  int      `yaml:"maxEntries"`
+	MinTTL      string   `yaml:"minTTL"`
+	MaxTTL      string   `yaml:"maxTTL"`
+	NegativeTTL string   `yaml:"negativeTTL"`
 }
 
 // FilterConfig defines the domain filter policy.
@@ -40,7 +52,7 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
-	var cfg Config
+	cfg := Config{DNS: DNSConfig{Enabled: true}}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
@@ -59,7 +71,7 @@ func NewFilePolicyStore(path string) *FilePolicyStore {
 
 // Save writes the policy into the file's filter section, preserving other config fields.
 func (s *FilePolicyStore) Save(pol policy.Policy) error {
-	cfg := Config{}
+	cfg := Config{DNS: DNSConfig{Enabled: true}}
 	if data, err := os.ReadFile(s.Path); err == nil {
 		info, err := os.Stat(s.Path)
 		if err != nil {

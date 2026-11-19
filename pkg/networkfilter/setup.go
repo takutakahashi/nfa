@@ -28,6 +28,7 @@ type tableRule struct {
 
 func iptablesRules() []tableRule {
 	proxyPort := fmt.Sprintf("%d", ProxyPort)
+	dnsPort := fmt.Sprintf("%d", DNSPort)
 	sidecarUID := fmt.Sprintf("%d", SidecarUID)
 
 	return []tableRule{
@@ -37,18 +38,31 @@ func iptablesRules() []tableRule {
 		{"filter", []string{"-A", "OUTPUT", "-m", "owner", "--uid-owner", sidecarUID, "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.1", "--dport", proxyPort, "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"}},
+		{"filter", []string{"-A", "OUTPUT", "-p", "udp", "-d", "127.0.0.1", "--dport", dnsPort, "-j", "ACCEPT"}},
+		{"filter", []string{"-A", "OUTPUT", "-p", "udp", "-j", "REJECT", "--reject-with", "icmp-port-unreachable"}},
 		{"filter", []string{"-A", "OUTPUT", "-p", "tcp", "-j", directAllowFilterChain}},
 		{"filter", []string{"-A", "OUTPUT", "-p", "tcp", "-j", runtimeDirectFilterChain}},
 		{"filter", []string{"-A", "OUTPUT", "-p", "tcp", "-j", "REJECT", "--reject-with", "tcp-reset"}},
 
 		{"nat", []string{"-N", directAllowNATChain}},
 		{"nat", []string{"-N", runtimeDirectNATChain}},
-		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.1", "-j", "RETURN"}},
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "-m", "owner", "--uid-owner", sidecarUID, "-j", "RETURN"}},
+		{"nat", []string{"-A", "OUTPUT", "-p", "udp", "-m", "owner", "--uid-owner", sidecarUID, "-j", "RETURN"}},
+		{"nat", []string{"-A", "OUTPUT", "-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-port", dnsPort}},
+		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-port", dnsPort}},
+		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.1", "-j", "RETURN"}},
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "-j", directAllowNATChain}},
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "-j", runtimeDirectNATChain}},
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-port", proxyPort}},
 		{"nat", []string{"-A", "OUTPUT", "-p", "tcp", "--dport", "443", "-j", "REDIRECT", "--to-port", proxyPort}},
+	}
+}
+
+func ip6tablesRules() []tableRule {
+	return []tableRule{
+		{"filter", []string{"-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT"}},
+		{"filter", []string{"-A", "OUTPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"}},
+		{"filter", []string{"-A", "OUTPUT", "-j", "REJECT", "--reject-with", "icmp6-adm-prohibited"}},
 	}
 }
 
@@ -74,6 +88,12 @@ func SetupIPTablesWithDirectAllowlist(entries []string) error {
 		cmd := exec.Command("iptables", args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("iptables -t %s %v: %w\noutput: %s", rule.table, rule.args, err, out)
+		}
+	}
+	for _, rule := range ip6tablesRules() {
+		args := append([]string{"-t", rule.table}, rule.args...)
+		if out, err := exec.Command("ip6tables", args...).CombinedOutput(); err != nil {
+			return fmt.Errorf("ip6tables -t %s %v: %w\noutput: %s", rule.table, rule.args, err, out)
 		}
 	}
 	for _, cidr := range DirectAllowlistCIDRs(entries) {
@@ -213,6 +233,17 @@ func directAllowlistCIDR(entry string) (string, bool) {
 // Pipe the output to iptables-restore or write it to a file for later use.
 func GenerateIPTablesRestore() string {
 	return GenerateIPTablesRestoreWithDirectAllowlist(nil)
+}
+
+// GenerateIP6TablesRestore returns rules that reject all non-loopback outbound IPv6.
+func GenerateIP6TablesRestore() string {
+	var sb strings.Builder
+	fmt.Fprintln(&sb, "*filter")
+	for _, rule := range ip6tablesRules() {
+		fmt.Fprintln(&sb, strings.Join(rule.args, " "))
+	}
+	fmt.Fprintln(&sb, "COMMIT")
+	return sb.String()
 }
 
 // GenerateIPTablesRestoreWithDirectAllowlist returns the base restore rules
