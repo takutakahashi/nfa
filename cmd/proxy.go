@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/takutakahashi/nfa/pkg/config"
@@ -73,6 +74,9 @@ func init() {
 		"Path to YAML config file where POST /policy persists policy. Defaults to --config when set.")
 	proxyCmd.Flags().Bool("with-setup", false,
 		"Apply nfa iptables rules before starting the proxy. Requires CAP_NET_ADMIN.")
+	proxyCmd.Flags().Bool("dns", true, "Run the policy-aware caching DNS resolver.")
+	proxyCmd.Flags().String("dns-listen", "", "DNS resolver listen address (default 127.0.0.1:5353).")
+	proxyCmd.Flags().StringSlice("dns-upstream", nil, "Upstream DNS server addresses (default: /etc/resolv.conf).")
 }
 
 func runProxy(cmd *cobra.Command, _ []string) error {
@@ -105,6 +109,9 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	upstreamProxyFlag, _ := cmd.Flags().GetString("upstream-proxy")
 	policyStoreFile, _ := cmd.Flags().GetString("policy-store-file")
 	withSetup, _ := cmd.Flags().GetBool("with-setup")
+	dnsEnabled, _ := cmd.Flags().GetBool("dns")
+	dnsListen, _ := cmd.Flags().GetString("dns-listen")
+	dnsUpstreams, _ := cmd.Flags().GetStringSlice("dns-upstream")
 
 	allowedDomains := parseDomains("NETWORK_FILTER_ALLOWED_DOMAINS", allowedFlag)
 	deniedDomains := parseDomains("NETWORK_FILTER_DENIED_DOMAINS", deniedFlag)
@@ -121,6 +128,15 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 
 	// Merge config file values when no CLI/env override was given.
 	if cfg != nil {
+		if !cmd.Flags().Changed("dns") {
+			dnsEnabled = cfg.DNS.Enabled
+		}
+		if dnsListen == "" {
+			dnsListen = cfg.DNS.Listen
+		}
+		if len(dnsUpstreams) == 0 {
+			dnsUpstreams = cfg.DNS.Upstreams
+		}
 		if len(allowedDomains) == 0 && len(deniedDomains) == 0 {
 			if cfg.Filter.IsAllowlist() {
 				allowedDomains = cfg.Filter.Domains
@@ -173,6 +189,9 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	if deferredPolicy {
 		log.Printf("[nfa] deferred-policy: policy inactive until POST /enable-policy on %s", controlEndpoint(controlSocket))
 	}
+	if withSetup && !dnsEnabled {
+		return fmt.Errorf("--with-setup requires the DNS resolver; remove --dns=false")
+	}
 
 	if err := maybeSetupIPTables(withSetup); err != nil {
 		return err
@@ -187,6 +206,43 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	}
 
 	proxy := networkfilter.NewProxy(filter, !deferredPolicy)
+	var dnsResolver *networkfilter.DNSResolver
+	if dnsEnabled {
+		dnsCfg := networkfilter.DefaultDNSResolverConfig()
+		dnsCfg.Listen, dnsCfg.Upstreams = dnsListen, dnsUpstreams
+		if cfg != nil {
+			dnsCfg.MaxEntries = cfg.DNS.MaxEntries
+			if cfg.DNS.MinTTL != "" {
+				d, err := time.ParseDuration(cfg.DNS.MinTTL)
+				if err != nil {
+					return fmt.Errorf("invalid dns.minTTL: %w", err)
+				}
+				dnsCfg.MinTTL = d
+			}
+			if cfg.DNS.MaxTTL != "" {
+				d, err := time.ParseDuration(cfg.DNS.MaxTTL)
+				if err != nil {
+					return fmt.Errorf("invalid dns.maxTTL: %w", err)
+				}
+				dnsCfg.MaxTTL = d
+			}
+			if cfg.DNS.NegativeTTL != "" {
+				d, err := time.ParseDuration(cfg.DNS.NegativeTTL)
+				if err != nil {
+					return fmt.Errorf("invalid dns.negativeTTL: %w", err)
+				}
+				dnsCfg.NegativeTTL = d
+			}
+		}
+		var err error
+		dnsResolver, err = networkfilter.NewDNSResolverForProxy(filter, !deferredPolicy, dnsCfg, proxy)
+		if err != nil {
+			return err
+		}
+		if err := dnsResolver.Start(); err != nil {
+			return err
+		}
+	}
 	if upstreamProxyURL != "" {
 		if err := proxy.SetUpstreamProxy(upstreamProxyURL); err != nil {
 			return err
@@ -209,6 +265,7 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	defer cleanupControlSocket()
 	go func() {
 		controlServer := networkfilter.NewControlServer(proxy, policyStore)
+		controlServer.SetDNSResolver(dnsResolver)
 		controlServer.SetDirectAllowlistUpdater(directAllowlistUpdater)
 		if err := controlServer.Run(controlLis); err != nil {
 			log.Printf("[nfa] control server error: %v", err)

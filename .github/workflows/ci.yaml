@@ -62,3 +62,18 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  network-e2e:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build nfa image
+        run: docker build -t nfa:e2e .
+
+      - name: Build network E2E image
+        run: docker build -t nfa:e2e-test -f test/e2e/Dockerfile .
+
+      - name: Run DNS, UDP, and IPv6 E2E
+        run: docker run --rm --privileged nfa:e2e-test

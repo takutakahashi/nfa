@@ -21,9 +21,10 @@ Both flags can be combined in a single invocation.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		apply, _ := cmd.Flags().GetBool("apply")
 		output, _ := cmd.Flags().GetString("output")
+		outputIPv6, _ := cmd.Flags().GetString("output-ipv6")
 		configPath, _ := cmd.Flags().GetString("config")
 
-		if !apply && output == "" {
+		if !apply && output == "" && outputIPv6 == "" {
 			return fmt.Errorf("specify at least one of --apply or --output")
 		}
 
@@ -51,6 +52,16 @@ Both flags can be combined in a single invocation.`,
 			}
 			log.Printf("[nfa] iptables-restore rules written to %s", output)
 		}
+		if outputIPv6 != "" {
+			content := networkfilter.GenerateIP6TablesRestore()
+			if outputIPv6 == "-" {
+				fmt.Print(content)
+			} else if err := os.WriteFile(outputIPv6, []byte(content), 0o644); err != nil {
+				return fmt.Errorf("writing IPv6 restore file: %w", err)
+			} else {
+				log.Printf("[nfa] ip6tables-restore rules written to %s", outputIPv6)
+			}
+		}
 
 		return nil
 	},
@@ -73,5 +84,6 @@ func loadSetupDirectAllowlist(configPath string) ([]string, error) {
 func init() {
 	setupIptablesCmd.Flags().Bool("apply", false, "Apply iptables rules directly (requires CAP_NET_ADMIN)")
 	setupIptablesCmd.Flags().String("output", "", `Write iptables-restore compatible rules to this file path ("-" for stdout)`)
+	setupIptablesCmd.Flags().String("output-ipv6", "", `Write ip6tables-restore compatible rules to this file path ("-" for stdout)`)
 	setupIptablesCmd.Flags().String("config", "", "Path to YAML config file containing IP/CIDR allowlist entries")
 }
