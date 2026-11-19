@@ -1,5 +1,5 @@
 #!/bin/sh
-set -eu
+set -eux
 
 cleanup() {
   if [ -n "${NFA_PID:-}" ]; then kill "$NFA_PID" 2>/dev/null || true; fi
