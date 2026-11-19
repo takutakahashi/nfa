@@ -37,6 +37,7 @@ func iptablesRules() []tableRule {
 		{"filter", []string{"-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-m", "owner", "--uid-owner", sidecarUID, "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.1", "--dport", proxyPort, "-j", "ACCEPT"}},
+		{"filter", []string{"-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.1", "--dport", dnsPort, "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-p", "udp", "-d", "127.0.0.1", "--dport", dnsPort, "-j", "ACCEPT"}},
 		{"filter", []string{"-A", "OUTPUT", "-p", "udp", "-j", "REJECT", "--reject-with", "icmp-port-unreachable"}},

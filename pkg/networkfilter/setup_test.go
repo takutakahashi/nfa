@@ -8,6 +8,7 @@ import (
 func TestGeneratedRulesCaptureDNSAndRejectOtherUDP(t *testing.T) {
 	rules := GenerateIPTablesRestore()
 	for _, want := range []string{
+		"-A OUTPUT -p tcp -d 127.0.0.1 --dport 5353 -j ACCEPT",
 		"-A OUTPUT -p udp --dport 53 -j REDIRECT --to-port 5353",
 		"-A OUTPUT -p tcp --dport 53 -j REDIRECT --to-port 5353",
 		"-A OUTPUT -p udp -j REJECT --reject-with icmp-port-unreachable",
