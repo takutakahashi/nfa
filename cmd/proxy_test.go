@@ -53,6 +53,23 @@ func TestProxyCommandHasUpstreamProxyFlag(t *testing.T) {
 	}
 }
 
+func TestProxyCommandHasListenAddressFlag(t *testing.T) {
+	flag := proxyCmd.Flags().Lookup("listen-address")
+	if flag == nil {
+		t.Fatal("proxy --listen-address flag is not registered")
+	}
+}
+
+func TestProxyCommandHasControlSocketModeFlag(t *testing.T) {
+	flag := proxyCmd.Flags().Lookup("control-socket-mode")
+	if flag == nil {
+		t.Fatal("proxy --control-socket-mode flag is not registered")
+	}
+	if got := flag.DefValue; got != "384" {
+		t.Fatalf("control-socket-mode default = %q, want 384 (0600)", got)
+	}
+}
+
 func TestRedactedURLHidesPassword(t *testing.T) {
 	got := redactedURL("http://user:secret@proxy.example:8080")
 	want := "http://user:xxxxx@proxy.example:8080"

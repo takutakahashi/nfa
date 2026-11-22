@@ -39,6 +39,7 @@ Env vars:
   NETWORK_FILTER_ALLOWED_DOMAINS  comma-separated allowed domains (sets allowlist mode)
   NETWORK_FILTER_DENIED_DOMAINS   comma-separated denied domains  (sets denylist mode)
   NETWORK_FILTER_CONTROL_SOCKET   Unix domain socket path for the control API
+  NETWORK_FILTER_LISTEN_ADDRESS   proxy listen address (default 127.0.0.1:3128)
   NETWORK_FILTER_UPSTREAM_PROXY   parent HTTP proxy URL for allowed outbound traffic
 
 A single listener on port 3128 handles:
@@ -68,6 +69,10 @@ func init() {
 		"Log would-be-blocked domains but do not reject traffic. Also via NETWORK_FILTER_COUNT_MODE.")
 	proxyCmd.Flags().String("control-socket", "",
 		"Unix domain socket path for the control API. Also via NETWORK_FILTER_CONTROL_SOCKET. When set, port 3129 is not used.")
+	proxyCmd.Flags().Uint32("control-socket-mode", 0o600,
+		"File mode for the control Unix socket")
+	proxyCmd.Flags().String("listen-address", "",
+		"TCP listen address for the forward proxy. Also via NETWORK_FILTER_LISTEN_ADDRESS. Defaults to 127.0.0.1:3128.")
 	proxyCmd.Flags().String("upstream-proxy", "",
 		"Parent HTTP proxy URL for allowed outbound traffic. Also via NETWORK_FILTER_UPSTREAM_PROXY.")
 	proxyCmd.Flags().String("policy-store-file", "",
@@ -106,6 +111,8 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	deferredFlag, _ := cmd.Flags().GetBool("deferred-policy")
 	countModeFlag, _ := cmd.Flags().GetBool("count-mode")
 	controlSocketFlag, _ := cmd.Flags().GetString("control-socket")
+	controlSocketMode, _ := cmd.Flags().GetUint32("control-socket-mode")
+	listenAddressFlag, _ := cmd.Flags().GetString("listen-address")
 	upstreamProxyFlag, _ := cmd.Flags().GetString("upstream-proxy")
 	policyStoreFile, _ := cmd.Flags().GetString("policy-store-file")
 	withSetup, _ := cmd.Flags().GetBool("with-setup")
@@ -120,6 +127,13 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 	controlSocket := strings.TrimSpace(os.Getenv("NETWORK_FILTER_CONTROL_SOCKET"))
 	if controlSocketFlag != "" {
 		controlSocket = strings.TrimSpace(controlSocketFlag)
+	}
+	listenAddress := strings.TrimSpace(os.Getenv("NETWORK_FILTER_LISTEN_ADDRESS"))
+	if listenAddressFlag != "" {
+		listenAddress = strings.TrimSpace(listenAddressFlag)
+	}
+	if listenAddress == "" {
+		listenAddress = fmt.Sprintf("127.0.0.1:%d", networkfilter.ProxyPort)
 	}
 	upstreamProxyURL := strings.TrimSpace(os.Getenv("NETWORK_FILTER_UPSTREAM_PROXY"))
 	if upstreamProxyFlag != "" {
@@ -263,6 +277,11 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer cleanupControlSocket()
+	if controlSocket != "" {
+		if err := os.Chmod(controlSocket, os.FileMode(controlSocketMode)); err != nil {
+			return fmt.Errorf("chmod control socket: %w", err)
+		}
+	}
 	go func() {
 		controlServer := networkfilter.NewControlServer(proxy, policyStore)
 		controlServer.SetDNSResolver(dnsResolver)
@@ -272,10 +291,9 @@ func runProxy(cmd *cobra.Command, _ []string) error {
 		}
 	}()
 
-	addr := fmt.Sprintf("0.0.0.0:%d", networkfilter.ProxyPort)
-	lis, err := net.Listen("tcp", addr)
+	lis, err := net.Listen("tcp", listenAddress)
 	if err != nil {
-		return fmt.Errorf("listen %s: %w", addr, err)
+		return fmt.Errorf("listen %s: %w", listenAddress, err)
 	}
 	return proxy.Run(lis)
 }
